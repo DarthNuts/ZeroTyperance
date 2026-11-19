@@ -7,6 +7,7 @@ export interface AppConstants {
     readonly title: string;
     readonly notice: string;
     readonly appVersion: string;
+    readonly coopServer: string;
     readonly rom: {
         readonly bundled: string;
         readonly bundledNote: string;
@@ -61,6 +62,15 @@ export interface AppConstants {
         readonly margin: number;
         readonly opacity: number;
     };
+}
+export const COOP_SERVER_ID = "APP.COOP_SERVER";
+export function isCoopServerAddress(v: string): boolean {
+    return /^wss?:\/\/[^/?#\s]+(?:[/?#]\S*)?$/i.test(v);
+}
+function coopServer(v: unknown): string {
+    if (typeof v !== "string" || (v !== "" && !isCoopServerAddress(v)))
+        throw new Error(`app_release.json: ${COOP_SERVER_ID} is neither empty nor a ws:// / wss:// address`);
+    return v;
 }
 function touchMode(v: string): "auto" | "on" | "off" {
     if (v !== "auto" && v !== "on" && v !== "off")
@@ -119,6 +129,7 @@ export function appConstantsFrom(doc: unknown): AppConstants {
         title: name("APP.TITLE"),
         notice: name("APP.NOTICE"),
         appVersion: byId.has(APP_VERSION_ID) ? name(APP_VERSION_ID) : UNVERSIONED,
+        coopServer: coopServer(byId.get(COOP_SERVER_ID)),
         rom: Object.freeze({ bundled: name("APP.ROM.BUNDLED"), bundledNote: name("APP.ROM.BUNDLED_NOTE") }),
         romSize: int("APP.ROM.SIZE"),
         assetsDb: name("APP.STORE.ASSETS_DB"),

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ZeroTyperance 0.1.0 installer for Linux and macOS.
+# ZeroTyperance 0.2.0 installer for Linux and macOS.
 #   curl -fsSL https://github.com/DarthNuts/ZeroTyperance/releases/latest/download/install.sh | bash
 #   uninstall: curl -fsSL .../install.sh | bash -s -- --uninstall
 # It installs the game page, the co-op server and a private copy of Node.js 24.22.2 (from nodejs.org, checked
@@ -12,7 +12,7 @@
 # ZT_ROM_URLS (where the ROM zip is, space-separated).
 set -euo pipefail
 
-ZT_VERSION="0.1.0"
+ZT_VERSION="0.2.0"
 NODE_VERSION="24.22.2"
 BASE="${ZT_RELEASE_BASE:-https://github.com/DarthNuts/ZeroTyperance/releases/latest/download}"
 PREFIX="${ZT_PREFIX:-$HOME/.local/share/zerotyperance}"

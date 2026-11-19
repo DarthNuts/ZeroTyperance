@@ -20,6 +20,10 @@
    "value": "Using the original ROM image, made royalty-free for distribution by its copyright owner (technopop.net). Cancel to pick your own."
   },
   {
+   "id": "APP.COOP_SERVER",
+   "value": "ws://85.235.151.36:47810/coop"
+  },
+  {
    "id": "APP.SPEED.ORIGINAL_BLANKS",
    "value": 5
   },
@@ -337,7 +341,7 @@
   },
   {
    "id": "APP.VERSION",
-   "value": "0.1.0"
+   "value": "0.2.0"
   }
  ]
 }

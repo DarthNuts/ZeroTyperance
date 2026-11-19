@@ -35,6 +35,11 @@ export interface Connector {
     join(code: string): Promise<Closable>;
     rooms?(): Promise<readonly RoomInfo[] | null>;
     closeRooms?(): void;
+    readonly server?: string;
+}
+export interface ReachLimit {
+    readonly ms: number;
+    readonly timers: Timers;
 }
 export interface Timers {
     setTimeout(fn: () => void, ms: number): unknown;
@@ -118,25 +123,48 @@ export function localConnector(c: NetConstants, rand: () => number, timers: Time
         }),
     };
 }
-export function onlineConnector(url: string, settings: Settings, c: NetConstants, Socket: new (url: string) => WsLike = WebSocket as unknown as new (url: string) => WsLike): Connector {
+export function onlineConnector(url: string, settings: Settings, c: NetConstants, Socket: new (url: string) => WsLike = WebSocket as unknown as new (url: string) => WsLike, limit?: ReachLimit): Connector {
     const ice = iceServers(c, { server: url, stun: settings.net.stun }) as RTCIceServer[];
-    const reach = (client: ServerClient): Promise<void> => client.whenOpen().catch(() => { throw new Unreachable(url); });
+    const reach = (client: ServerClient, ws: WsLike): Promise<void> => new Promise<void>((resolve, reject) => {
+        let h: unknown = null;
+        let settled = false;
+        const done = (ok: boolean): void => {
+            if (settled)
+                return;
+            settled = true;
+            if (h !== null)
+                limit!.timers.clearTimeout(h);
+            if (ok)
+                resolve();
+            else
+                reject(new Unreachable(url));
+        };
+        if (limit)
+            h = limit.timers.setTimeout(() => { h = null; done(false); try {
+                ws.close();
+            }
+            catch { } }, limit.ms);
+        client.whenOpen().then(() => done(true), () => done(false));
+    });
     let lister: RoomLister | null = null;
     return {
+        server: url,
         host: async () => {
             let arrived!: () => void;
             const peerHere = new Promise<void>((r) => { arrived = r; });
             let onPeer: (() => void) | undefined;
-            const client = new ServerClient({ consts: c, socket: new Socket(url), openSocket: () => new Socket(url), onPeer: () => { onPeer?.(); } });
+            const ws = new Socket(url);
+            const client = new ServerClient({ consts: c, socket: ws, openSocket: () => new Socket(url), onPeer: () => { onPeer?.(); } });
             onPeer = arrived;
-            await reach(client);
+            await reach(client, ws);
             const { code } = await client.host();
             const peer = peerHere.then(() => openSessionTransport(client, 0, ice, { consts: c })).then((s) => s.transport);
             return { code, urls: [...client.urls], peer, cancel: () => client.leave() };
         },
         join: async (code) => {
-            const client = new ServerClient({ consts: c, socket: new Socket(url), openSocket: () => new Socket(url) });
-            await reach(client);
+            const ws = new Socket(url);
+            const client = new ServerClient({ consts: c, socket: ws, openSocket: () => new Socket(url) });
+            await reach(client, ws);
             await client.join(code.trim());
             const s = await openSessionTransport(client, 1, ice, { consts: c });
             return s.transport;
@@ -166,7 +194,7 @@ export interface CoopPageDeps {
         readonly version: string;
         readonly md5: string;
     };
-    readonly connector: (server: string) => Connector;
+    readonly connector: (server: string, reach?: ReachLimit) => Connector;
     readonly page?: {
         readonly protocol: string;
         readonly host: string;
@@ -222,13 +250,27 @@ export function speedPace(app: AppConstants, speed: unknown): StepPace {
     return stepPace(app, mode, typeof sp?.custom_steps === "number" ? sp.custom_steps : app.speed.customDefault);
 }
 export const HOST_ROW = 0, JOIN_ROW = 1, SERVER_ROW = 2;
+export const DEFAULT_FALLBACK_TEXT = "then this page's own server";
+export function defaultServerText(coopServer: string): string { return `${coopServer} ${DEFAULT_FALLBACK_TEXT}`; }
+export function serverHostText(url: string): string {
+    const m = /^wss?:\/\/(?:[^/?#@]*@)?([^/?#]+)/i.exec(url);
+    return m ? m[1]! : "";
+}
+interface ListSource {
+    readonly url: string;
+    readonly conn: Connector;
+    rooms: readonly RoomInfo[] | null;
+    unlisted: boolean;
+    unreached: boolean;
+}
 export function createCoopPage(deps: CoopPageDeps): CoopPageController {
     let role: "host" | "join" | null = null;
     let phase: Phase = "idle";
     let view: "main" | "join" = "main";
     let rooms: readonly RoomInfo[] | null = null;
+    let roomServer = new Map<string, string>();
     let unlisted = false;
-    let listConn: Connector | null = null;
+    let sources: ListSource[] = [];
     let listTimer: unknown = null;
     let listToken = 0;
     let hostUrls: readonly string[] = [];
@@ -247,7 +289,17 @@ export function createCoopPage(deps: CoopPageDeps): CoopPageController {
         }).location;
         return g ? { protocol: g.protocol, host: g.host } : null;
     };
-    const inUse = (): string => serverInUse(deps.getSettings().net.server, pageLoc(), deps.net);
+    const ownOrTyped = (): string => serverInUse(deps.getSettings().net.server, pageLoc(), deps.net);
+    const defaultOn = (): boolean => deps.app.coopServer !== "" && normalizeServer(deps.getSettings().net.server, deps.net) === "";
+    const servers = (): string[] => {
+        if (!defaultOn())
+            return [ownOrTyped()];
+        const own = ownOrTyped();
+        return own === "" || own === deps.app.coopServer ? [deps.app.coopServer] : [deps.app.coopServer, own];
+    };
+    const inUse = (): string => servers()[0]!;
+    const connectorFor = (url: string): Connector => defaultOn() && url === deps.app.coopServer ? deps.connector(url, { ms: deps.net.serverReachMs, timers }) : deps.connector(url);
+    let via = "";
     let code = "";
     let note = "";
     let liveH: CoopLive | null = null;
@@ -259,8 +311,9 @@ export function createCoopPage(deps: CoopPageDeps): CoopPageController {
     const name = (i: number): string => deps.characterNames[i] ?? CHARACTER_NAMES[i] ?? "partner";
     function status(): string {
         const cp = coop();
+        const through = serverHostText(via);
         if (cp)
-            return cp.statusLine;
+            return through !== "" ? `${cp.statusLine} (through ${through})` : cp.statusLine;
         return note;
     }
     function fail(err: unknown): void {
@@ -319,7 +372,7 @@ export function createCoopPage(deps: CoopPageDeps): CoopPageController {
         note = "";
         deps.requestRender();
     }
-    async function open(as: "host" | "join"): Promise<void> {
+    async function open(as: "host" | "join", only?: string): Promise<void> {
         if (phase !== "idle")
             return;
         if (as === "join" && code === "") {
@@ -327,8 +380,8 @@ export function createCoopPage(deps: CoopPageDeps): CoopPageController {
             deps.requestRender();
             return;
         }
-        const url = inUse();
-        if (blockedByHttps(pageLoc(), url)) {
+        const tries = (only !== undefined ? [only] : servers()).filter((u) => !blockedByHttps(pageLoc(), u));
+        if (tries.length === 0) {
             note = HTTPS_WS_TEXT;
             deps.requestRender();
             return;
@@ -338,68 +391,157 @@ export function createCoopPage(deps: CoopPageDeps): CoopPageController {
         phase = "connecting";
         note = "connecting";
         hostUrls = [];
+        via = "";
         deps.requestRender();
+        const unreached: string[] = [];
+        let refusal: unknown = null;
         try {
-            const conn = deps.connector(url);
-            if (as === "host") {
-                const h = await conn.host();
-                if (mine !== token) {
-                    h.cancel();
+            for (const url of tries) {
+                const conn = only !== undefined ? deps.connector(url) : connectorFor(url);
+                if (as === "host") {
+                    let h: Awaited<ReturnType<Connector["host"]>>;
+                    try {
+                        h = await conn.host();
+                    }
+                    catch (err) {
+                        if (mine !== token)
+                            return;
+                        if (err instanceof Unreachable) {
+                            unreached.push(url);
+                            continue;
+                        }
+                        throw err;
+                    }
+                    if (mine !== token) {
+                        h.cancel();
+                        return;
+                    }
+                    via = conn.server ?? "";
+                    code = h.code;
+                    hostUrls = h.urls ?? [];
+                    note = "waiting for the partner";
+                    cancelRoom = h.cancel;
+                    deps.requestRender();
+                    const tp = await h.peer;
+                    if (mine !== token) {
+                        tp.close();
+                        return;
+                    }
+                    begin(tp, 0, h.code);
                     return;
                 }
-                code = h.code;
-                hostUrls = h.urls ?? [];
-                note = "waiting for the partner";
-                cancelRoom = h.cancel;
-                deps.requestRender();
-                const tp = await h.peer;
+                let tp: Closable;
+                try {
+                    tp = await conn.join(code);
+                }
+                catch (err) {
+                    if (mine !== token)
+                        return;
+                    if (err instanceof Unreachable) {
+                        unreached.push(url);
+                        continue;
+                    }
+                    if (err instanceof ServerRefusal && err.reason === "no_room") {
+                        refusal = err;
+                        continue;
+                    }
+                    throw err;
+                }
                 if (mine !== token) {
                     tp.close();
                     return;
                 }
-                begin(tp, 0, h.code);
-            }
-            else {
-                const tp = await conn.join(code);
-                if (mine !== token) {
-                    tp.close();
-                    return;
-                }
+                via = conn.server ?? "";
                 begin(tp, 1, code);
+                return;
             }
+            throw refusal ?? new Unreachable(unreached.join(", "));
         }
         catch (err) {
-            if (mine === token)
-                fail(err);
+            if (mine !== token)
+                return;
+            fail(err);
+            if (err === refusal && defaultOn() && unreached.includes(deps.app.coopServer)) {
+                note = `${note} (cannot reach ${deps.app.coopServer})`;
+                deps.requestRender();
+            }
         }
+    }
+    function merge(): void {
+        const seen = new Map<string, string>();
+        const out: RoomInfo[] = [];
+        let any = false;
+        for (const s of sources) {
+            if (s.rooms === null)
+                continue;
+            any = true;
+            for (const r of s.rooms) {
+                const k = normalizeCode(r.code);
+                if (seen.has(k))
+                    continue;
+                seen.set(k, s.url);
+                out.push(r);
+            }
+        }
+        rooms = any ? out : null;
+        roomServer = seen;
+        unlisted = sources.length > 0 && sources.every((s) => s.unlisted);
+    }
+    function listLine(): string {
+        if (sources.length < 2)
+            return "";
+        if (sources.every((x) => x.unreached))
+            return new Unreachable(sources.map((x) => x.url).join(", ")).message;
+        const dflt = defaultOn() ? sources.find((x) => x.url === deps.app.coopServer) : undefined;
+        return dflt !== undefined && dflt.unreached ? new Unreachable(dflt.url).message : "";
     }
     function poll(): void {
         listTimer = null;
         if (view !== "join")
             return;
         const mine = listToken;
-        if (phase === "idle" && !unlisted && listConn?.rooms) {
-            listConn.rooms().then((list) => {
-                if (mine !== listToken)
-                    return;
-                if (list === null) {
-                    unlisted = true;
-                    rooms = null;
-                }
-                else {
-                    rooms = list;
-                    if (note.startsWith("cannot reach"))
+        if (phase === "idle") {
+            for (const s of sources) {
+                if (s.unlisted || !s.conn.rooms)
+                    continue;
+                s.conn.rooms().then((list) => {
+                    if (mine !== listToken)
+                        return;
+                    s.unreached = false;
+                    if (list === null) {
+                        s.unlisted = true;
+                        s.rooms = null;
+                    }
+                    else {
+                        s.rooms = list;
+                    }
+                    merge();
+                    const line = listLine();
+                    if (line !== "" && phase === "idle" && (note === "" || note.startsWith("cannot reach")))
+                        note = line;
+                    else if (line === "" && note.startsWith("cannot reach"))
                         note = "";
-                }
-                deps.requestRender();
-            }, (err: unknown) => {
-                if (mine !== listToken)
-                    return;
-                if (phase === "idle") {
-                    note = failureWords(err);
                     deps.requestRender();
-                }
-            });
+                }, (err: unknown) => {
+                    if (mine !== listToken)
+                        return;
+                    s.unreached = true;
+                    s.rooms = null;
+                    merge();
+                    if (phase === "idle") {
+                        if (sources.length === 1)
+                            note = failureWords(err);
+                        else if (sources.every((x) => x.unreached))
+                            note = listLine();
+                        else {
+                            const line = listLine();
+                            if (line !== "" && (note === "" || note.startsWith("cannot reach")))
+                                note = line;
+                        }
+                    }
+                    deps.requestRender();
+                });
+            }
         }
         listTimer = timers.setTimeout(poll, deps.net.roomListMs);
     }
@@ -407,15 +549,16 @@ export function createCoopPage(deps: CoopPageDeps): CoopPageController {
         closeJoinPage();
         view = "join";
         rooms = null;
+        roomServer = new Map();
         unlisted = false;
         note = "";
-        const url = inUse();
-        if (blockedByHttps(pageLoc(), url)) {
+        const urls = servers().filter((u) => !blockedByHttps(pageLoc(), u));
+        if (urls.length === 0) {
             note = HTTPS_WS_TEXT;
             deps.requestRender();
             return;
         }
-        listConn = deps.connector(url);
+        sources = urls.map((url) => ({ url, conn: deps.connector(url), rooms: null, unlisted: false, unreached: false }));
         deps.requestRender();
         poll();
     }
@@ -424,8 +567,9 @@ export function createCoopPage(deps: CoopPageDeps): CoopPageController {
         if (listTimer !== null)
             timers.clearTimeout(listTimer);
         listTimer = null;
-        listConn?.closeRooms?.();
-        listConn = null;
+        for (const s of sources)
+            s.conn.closeRooms?.();
+        sources = [];
         view = "main";
     }
     function keepServer(text: string): void {
@@ -511,7 +655,7 @@ export function createCoopPage(deps: CoopPageDeps): CoopPageController {
             return [
                 { label: "Host a game", value: "" },
                 { label: "Join a game", value: "" },
-                { label: "Server", value: inUse() || "(the page's own server)" },
+                { label: "Server", value: defaultOn() ? defaultServerText(deps.app.coopServer) : inUse() || "(the page's own server)" },
             ];
         },
         adjust(index: number, _delta: -1 | 1, chosen: boolean): void {
@@ -526,7 +670,7 @@ export function createCoopPage(deps: CoopPageDeps): CoopPageController {
                 const listed = rooms ?? [];
                 if (index < listed.length) {
                     code = normalizeCode(listed[index]!.code);
-                    void open("join");
+                    void open("join", roomServer.get(code));
                 }
                 else if (index === (rooms === null ? 0 : Math.max(1, listed.length)))
                     void open("join");
@@ -564,7 +708,7 @@ export function createCoopPage(deps: CoopPageDeps): CoopPageController {
                 input.type = "text";
                 input.value = serverText ?? deps.getSettings().net.server;
                 input.size = 40;
-                input.placeholder = `co-op server (empty: ${serverInUse("", pageLoc(), deps.net) || "the page's own"})`;
+                input.placeholder = `co-op server (empty: ${deps.app.coopServer !== "" ? defaultServerText(deps.app.coopServer) : serverInUse("", pageLoc(), deps.net) || "the page's own"})`;
                 input.spellcheck = false;
                 input.autocomplete = "off";
                 input.addEventListener("input", () => { serverText = input.value; });

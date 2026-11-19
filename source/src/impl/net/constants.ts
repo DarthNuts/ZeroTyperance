@@ -36,6 +36,7 @@ export interface NetConstants {
     readonly serverFrameMax: number;
     readonly serverRate: number;
     readonly roomListMs: number;
+    readonly serverReachMs: number;
     readonly roomListMax: number;
     readonly gateSeeds: number;
     readonly gateSteps: number;
@@ -77,6 +78,7 @@ export function netConstantsFrom(doc: Doc): NetConstants {
         serverFrameMax: get("NET.SERVER_FRAME_MAX"),
         serverRate: get("NET.SERVER_RATE"),
         roomListMs: get("NET.ROOM_LIST_MS"),
+        serverReachMs: get("NET.SERVER_REACH_MS"),
         roomListMax: get("NET.ROOM_LIST_MAX"),
         lateEffectMax: get("NET.LATE_EFFECT_MAX"),
         timeoutMs: get("NET.TIMEOUT_MS"),

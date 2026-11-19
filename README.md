@@ -13,7 +13,7 @@ the results in the browser's storage. What it ships besides its code is the engi
 damage and the like, written as numbers) and the frame timing of the attract demos as measured on a console. To use
 your own copy of the ROM image instead, install with `ZT_NO_ROM=1` and pick it in the page.
 
-Version 0.1.0.
+Version 0.2.0.
 
 ## Install
 
@@ -54,11 +54,18 @@ The browser keeps the extracted assets per address: keep the same port between r
 
 ## Co-op
 
-- **Same network:** both players run `zerotyperance`. One chooses **Co-op → Host a game**; the other chooses
-  **Co-op → Join a game** and picks that game from the list (or opens the host's address, for example
-  `http://192.168.1.20:8802/`, and enters the room code). On Windows, allow Node.js on private networks when asked.
-- **Internet:** the host forwards TCP port 8802 to their computer; the other player opens
-  `http://HOST-ADDRESS:8802/` and joins with the room code. That page asks the other player for the ROM image the
+- **Anywhere (the default):** both players run `zerotyperance`. One chooses **Co-op → Host a game** and tells the
+  other the room code; the other chooses **Co-op → Join a game** and types it (two players behind the same router
+  can also pick the game from the list). The game goes through the ZeroTyperance co-op server at `85.235.151.36`
+  (TCP and UDP port 47810): no port forwarding. When the host cannot reach that server, the room opens on the host's
+  own program instead, and a player on another network then needs the host's address, as below.
+- **Same network:** works as above; without the co-op server the Join page still lists the open games of your
+  local network (or open the host's address, for example `http://192.168.1.20:8802/`, and enter the room code).
+  On Windows, allow Node.js on private networks when asked.
+- **Internet without the co-op server:** both players type the address of the host's program into
+  **Co-op → Server** (a typed address is used alone): the host `localhost:8802`, the other player
+  `HOST-ADDRESS:8802`. The host forwards TCP port 8802 to their computer; the other player opens
+  `http://HOST-ADDRESS:8802/`, types the address there and joins with the room code. That page asks the other player for the ROM image the
   first time: the host's program hands its copy only to its own computer and its local network (an installed
   ZeroTyperance keeps one in its folder, `rom/Zerotole.bin`).
 - Both players need the same ROM image and the same version of ZeroTyperance.
@@ -78,8 +85,16 @@ The browser keeps the extracted assets per address: keep the same port between r
   the internet without any port forwarding.
 - While it runs it announces its open games on your local network once a second (UDP port 47811), with your
   computer's name.
-- No telemetry: the page and the program contact nothing else. The installer contacts only GitHub (this release),
-  nodejs.org (Node.js) and technopop.net or web.archive.org (the ROM image).
+- **The co-op server.** Only when a player chooses Host a game or Join a game with the Server row empty does the
+  page connect to the co-op server at `85.235.151.36` (TCP and UDP port 47810), which the author of ZeroTyperance
+  runs. It sees your IP address, the room code and the network addresses your browser offers for the direct
+  connection to the other player (which can include your address on your local network). It passes the two pages'
+  connection setup to each other, and it carries the game's messages when the two browsers cannot connect directly.
+  Its connections are not encrypted (`ws://`). The co-op program on that server stores nothing; its log keeps the
+  time, the event, the room code and only the network part of your address (the first three numbers of an IPv4
+  address, the first 48 bits of an IPv6 one). Type another server into **Co-op → Server** to use only that one.
+- No telemetry: apart from that server, the page and the program contact nothing else. The installer contacts only
+  GitHub (this release), nodejs.org (Node.js) and technopop.net or web.archive.org (the ROM image).
 
 ## Uninstall
 

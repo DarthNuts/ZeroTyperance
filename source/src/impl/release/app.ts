@@ -239,7 +239,7 @@ export async function mountRelease(container: HTMLElement, deps: ReleaseDeps): P
                 throw new Error("the title menu or the character select is not loaded");
             coopCtl = createCoopPage({
                 net, app: c, getSettings: () => settings, hello: { version: c.appVersion, md5: deps.md5 },
-                connector: (server) => onlineConnector(server, settings, net),
+                connector: (server, reach) => onlineConnector(server, settings, net, undefined, reach),
                 page: { protocol: location.protocol, host: location.host },
                 saveServer: (server) => { settings = { ...settings, net: { ...settings.net, server } }; save(); },
                 makeCore: (start) => {
