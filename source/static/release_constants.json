@@ -1,0 +1,343 @@
+{
+ "format": "zt-spec-data/1",
+ "spec": "ZT-APP-RELEASE",
+ "name": "app_release",
+ "constants": [
+  {
+   "id": "APP.TITLE",
+   "value": "ZeroTyperance"
+  },
+  {
+   "id": "APP.NOTICE",
+   "value": "An unofficial engine for Zero Tolerance (Sega Mega Drive / Genesis, 1994). It needs your own ROM image and is not affiliated with Sega, Technopop or Accolade."
+  },
+  {
+   "id": "APP.ROM.BUNDLED",
+   "value": "rom.bin"
+  },
+  {
+   "id": "APP.ROM.BUNDLED_NOTE",
+   "value": "Using the original ROM image, made royalty-free for distribution by its copyright owner (technopop.net). Cancel to pick your own."
+  },
+  {
+   "id": "APP.SPEED.ORIGINAL_BLANKS",
+   "value": 5
+  },
+  {
+   "id": "APP.SPEED.CUSTOM_MIN",
+   "value": 1
+  },
+  {
+   "id": "APP.SPEED.CUSTOM_MAX",
+   "value": 60
+  },
+  {
+   "id": "APP.SPEED.CUSTOM_DEFAULT",
+   "value": 20
+  },
+  {
+   "id": "APP.ROM.SIZE",
+   "value": 2097152
+  },
+  {
+   "id": "APP.KEYS.A",
+   "value": "KeyZ"
+  },
+  {
+   "id": "APP.KEYS.B",
+   "value": "KeyX"
+  },
+  {
+   "id": "APP.KEYS.C",
+   "value": "KeyC"
+  },
+  {
+   "id": "APP.STORE.SETTINGS_KEY",
+   "value": "zt.release.settings"
+  },
+  {
+   "id": "APP.STORE.ASSETS_DB",
+   "value": "zt-assets"
+  },
+  {
+   "id": "APP.KEYS.UP",
+   "value": "ArrowUp"
+  },
+  {
+   "id": "APP.KEYS.DOWN",
+   "value": "ArrowDown"
+  },
+  {
+   "id": "APP.KEYS.LEFT",
+   "value": "ArrowLeft"
+  },
+  {
+   "id": "APP.KEYS.RIGHT",
+   "value": "ArrowRight"
+  },
+  {
+   "id": "APP.KEYS.START",
+   "value": "Enter"
+  },
+  {
+   "id": "APP.KEYS.MENU",
+   "value": "Escape"
+  },
+  {
+   "id": "APP.KEYS.FULLSCREEN",
+   "value": "F11"
+  },
+  {
+   "id": "APP.KEYS.MUTE",
+   "value": "KeyM"
+  },
+  {
+   "id": "APP.PAD.A",
+   "value": 0
+  },
+  {
+   "id": "APP.PAD.B",
+   "value": 1
+  },
+  {
+   "id": "APP.PAD.C",
+   "value": 2
+  },
+  {
+   "id": "APP.PAD.START",
+   "value": 9
+  },
+  {
+   "id": "APP.PAD.MENU",
+   "value": 8
+  },
+  {
+   "id": "APP.PAD.UP",
+   "value": 12
+  },
+  {
+   "id": "APP.PAD.DOWN",
+   "value": 13
+  },
+  {
+   "id": "APP.PAD.LEFT",
+   "value": 14
+  },
+  {
+   "id": "APP.PAD.RIGHT",
+   "value": 15
+  },
+  {
+   "id": "APP.PAD.STICK_DEADZONE",
+   "value": 0.5
+  },
+  {
+   "id": "APP.AUDIO.VOLUME_DEFAULT",
+   "value": 80
+  },
+  {
+   "id": "APP.AUDIO.VOLUME_MAX",
+   "value": 100
+  },
+  {
+   "id": "APP.TOUCH.DEFAULT",
+   "value": "auto"
+  },
+  {
+   "id": "APP.TOUCH.DPAD_SIZE",
+   "value": 0.36
+  },
+  {
+   "id": "APP.TOUCH.DPAD_DEADZONE",
+   "value": 0.2
+  },
+  {
+   "id": "APP.TOUCH.BUTTON_SIZE",
+   "value": 0.13
+  },
+  {
+   "id": "APP.TOUCH.MARGIN",
+   "value": 0.04
+  },
+  {
+   "id": "APP.TOUCH.OPACITY",
+   "value": 0.35
+  },
+  {
+   "id": "APP.KEYS.STATE_SAVE",
+   "value": "F5"
+  },
+  {
+   "id": "APP.KEYS.STATE_LOAD",
+   "value": "F8"
+  },
+  {
+   "id": "APP.STATE.SLOTS",
+   "value": 10
+  },
+  {
+   "id": "APP.STATE.FORMAT",
+   "value": 1
+  },
+  {
+   "id": "APP.STORE.STATES_DB",
+   "value": "zt-states"
+  },
+  {
+   "id": "APP.KEYS.SAVE_PASSWORD",
+   "value": "F7"
+  },
+  {
+   "id": "APP.PW.SLOTS",
+   "value": 41
+  },
+  {
+   "id": "APP.PW.NOTICE_MS",
+   "value": 2000
+  },
+  {
+   "id": "APP.MOUSE.SENS_MIN",
+   "value": 1
+  },
+  {
+   "id": "APP.MOUSE.SENS_MAX",
+   "value": 64
+  },
+  {
+   "id": "APP.MOUSE.SENS_DEFAULT",
+   "value": 8
+  },
+  {
+   "id": "APP.MOUSE.DRAIN",
+   "value": 64
+  },
+  {
+   "id": "APP.MOUSE.CAP_BLANKS",
+   "value": 30
+  },
+  {
+   "id": "APP.MODERN.KEYS.FORWARD",
+   "value": [
+    "KeyW"
+   ]
+  },
+  {
+   "id": "APP.MODERN.KEYS.BACK",
+   "value": [
+    "KeyS"
+   ]
+  },
+  {
+   "id": "APP.MODERN.KEYS.STRAFE_LEFT",
+   "value": [
+    "KeyA"
+   ]
+  },
+  {
+   "id": "APP.MODERN.KEYS.STRAFE_RIGHT",
+   "value": [
+    "KeyD"
+   ]
+  },
+  {
+   "id": "APP.MODERN.KEYS.TURN_LEFT",
+   "value": [
+    "ArrowLeft"
+   ]
+  },
+  {
+   "id": "APP.MODERN.KEYS.TURN_RIGHT",
+   "value": [
+    "ArrowRight"
+   ]
+  },
+  {
+   "id": "APP.MODERN.KEYS.JUMP",
+   "value": [
+    "Space"
+   ]
+  },
+  {
+   "id": "APP.MODERN.KEYS.CROUCH",
+   "value": [
+    "KeyC"
+   ]
+  },
+  {
+   "id": "APP.MODERN.KEYS.FIRE",
+   "value": [
+    "Mouse0"
+   ]
+  },
+  {
+   "id": "APP.MODERN.KEYS.NEXT_ITEM",
+   "value": [
+    "Mouse2",
+    "WheelDown"
+   ]
+  },
+  {
+   "id": "APP.MODERN.KEYS.PREV_ITEM",
+   "value": [
+    "WheelUp"
+   ]
+  },
+  {
+   "id": "APP.MODERN.KEYS.SLOT_1",
+   "value": [
+    "Digit1"
+   ]
+  },
+  {
+   "id": "APP.MODERN.KEYS.SLOT_2",
+   "value": [
+    "Digit2"
+   ]
+  },
+  {
+   "id": "APP.MODERN.KEYS.SLOT_3",
+   "value": [
+    "Digit3"
+   ]
+  },
+  {
+   "id": "APP.MODERN.KEYS.SLOT_4",
+   "value": [
+    "Digit4"
+   ]
+  },
+  {
+   "id": "APP.MODERN.KEYS.SLOT_5",
+   "value": [
+    "Digit5"
+   ]
+  },
+  {
+   "id": "APP.MODERN.KEYS.PAUSE",
+   "value": [
+    "Enter",
+    "KeyP"
+   ]
+  },
+  {
+   "id": "APP.MODERN.MOUSE.SENS_MIN",
+   "value": 1
+  },
+  {
+   "id": "APP.MODERN.MOUSE.SENS_MAX",
+   "value": 100
+  },
+  {
+   "id": "APP.MODERN.MOUSE.SENS_DEFAULT",
+   "value": 10
+  },
+  {
+   "id": "APP.MODERN.MOUSE.SMOOTH_MAX",
+   "value": 8
+  },
+  {
+   "id": "APP.VERSION",
+   "value": "0.1.0"
+  }
+ ]
+}

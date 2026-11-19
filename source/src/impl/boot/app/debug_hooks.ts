@@ -1,0 +1,56 @@
+import type { LcgRng } from "../../../rng.js";
+import type { ScreenState } from "../../screen_types.js";
+import type { SoundEvent } from "../../tick/sound.js";
+import type { TitleCore } from "../../title/loop.js";
+import type { AudioEngine } from "./audio.js";
+import type { IndexedPicture } from "./newgame.js";
+import type { PatternLookup } from "./render.js";
+import type { AttractKit } from "./tick_kit.js";
+export type Phase = "sega" | "boot" | "title" | "options" | "briefing" | "demo" | "newgame";
+export interface CoreControl {
+    phase: Phase;
+    rng: LcgRng | null;
+    running: boolean;
+    latching: boolean;
+    readonly blankCounter: number;
+    readonly tickKit: AttractKit | null;
+    readonly titleCore: TitleCore | null;
+    readonly canvas: HTMLCanvasElement;
+    readonly scale: number;
+    readonly engine: AudioEngine;
+    readonly logBox: HTMLElement;
+    clearLatched(): void;
+    resetPicture(): void;
+    resetClock(): void;
+    endRun(to: string, from: "title" | "options" | "briefing"): void;
+    clearExit(): void;
+    logLine(text: string): void;
+    playSounds(events: readonly SoundEvent[], label: string): void;
+    present(state: ScreenState, pattern: PatternLookup): void;
+    drawIndexed(pic: IndexedPicture): void;
+    startTitle(heldPad?: number): void;
+    restart(): void;
+    updateStatus(): void;
+    samplePad(keepTaps?: boolean): number;
+    describeEvent(e: object): string;
+    errorText(reason: unknown): string;
+    fetchJson(url: string): Promise<unknown>;
+}
+export interface DebugPart {
+    readonly tas: boolean;
+    readonly tasFinished: boolean;
+    readonly busy: boolean;
+    readonly hasPick: boolean;
+    statusText(state: string): string | null;
+    tasTick(): boolean;
+    titleExit(to: string, briefing: boolean): void;
+    clearPick(): void;
+    startDemo(): void;
+    demoTick(): void;
+    demoLevelWait(): number | null;
+    clear(): void;
+    stopTas(): void;
+    dropAll(): void;
+    updateButtons(): void;
+    onError(): void;
+}
