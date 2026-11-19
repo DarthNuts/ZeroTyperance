@@ -17,7 +17,19 @@ Version 0.2.0.
 
 ## Install
 
-Windows (PowerShell):
+**Windows:** from the [latest release](https://github.com/DarthNuts/ZeroTyperance/releases/latest) download
+
+- **`ZeroTyperance-0.2.0-setup.exe`**, the installer: no administrator rights; it installs into
+  `%LOCALAPPDATA%\Programs\ZeroTyperance`, adds a Start menu entry (and, if you tick it, a desktop shortcut) and an
+  entry in Settings → Apps for uninstalling. Running a newer setup later updates the game.
+- or **`ZeroTyperance-0.2.0-windows-x64.zip`**, the portable app: unzip it anywhere (a USB stick works) and start
+  `ZeroTyperance.exe` in its folder.
+
+Both include Node.js 24.22.2 and download the ROM image (see above) when installed or first started. The files
+are not code-signed, so Windows SmartScreen may say "Windows protected your PC": choose **More info**, then **Run
+anyway**.
+
+Windows, from PowerShell instead (installs the `zerotyperance` command):
 
 ```powershell
 irm https://github.com/DarthNuts/ZeroTyperance/releases/latest/download/install.ps1 | iex
@@ -29,8 +41,8 @@ Linux, macOS:
 curl -fsSL https://github.com/DarthNuts/ZeroTyperance/releases/latest/download/install.sh | bash
 ```
 
-The installer puts the game, its small local server and a private copy of Node.js 24.22.2 (downloaded from
-nodejs.org and checked against a pinned SHA-256) into one folder, and adds the command `zerotyperance`:
+The one-line installers put the game, its small local server and a private copy of Node.js 24.22.2 (downloaded
+from nodejs.org and checked against a pinned SHA-256) into one folder, and add the command `zerotyperance`:
 
 | | folder | command |
 |---|---|---|
@@ -40,6 +52,13 @@ nodejs.org and checked against a pinned SHA-256) into one folder, and adds the c
 No administrator rights. Running the installer again updates the game.
 
 ## Play
+
+**Windows app** (the setup or the portable zip): start **ZeroTyperance** from the Start menu, or `ZeroTyperance.exe`.
+It opens the game in its own window (Microsoft Edge's app mode; Chrome or your default browser when Edge is missing)
+and stays in the notification area next to the clock while the game server runs: click its icon to open the window
+again, right-click it and choose **Quit** to stop it.
+
+**The command** (the one-line installers):
 
 ```sh
 zerotyperance
@@ -54,7 +73,7 @@ The browser keeps the extracted assets per address: keep the same port between r
 
 ## Co-op
 
-- **Anywhere (the default):** both players run `zerotyperance`. One chooses **Co-op → Host a game** and tells the
+- **Anywhere (the default):** both players start ZeroTyperance. One chooses **Co-op → Host a game** and tells the
   other the room code; the other chooses **Co-op → Join a game** and types it (two players behind the same router
   can also pick the game from the list). The game goes through the ZeroTyperance co-op server at `85.235.151.36`
   (TCP and UDP port 47810): no port forwarding. When the host cannot reach that server, the room opens on the host's
@@ -93,12 +112,16 @@ The browser keeps the extracted assets per address: keep the same port between r
   Its connections are not encrypted (`ws://`). The co-op program on that server stores nothing; its log keeps the
   time, the event, the room code and only the network part of your address (the first three numbers of an IPv4
   address, the first 48 bits of an IPv6 one). Type another server into **Co-op → Server** to use only that one.
-- No telemetry: apart from that server, the page and the program contact nothing else. The installer contacts only
-  GitHub (this release), nodejs.org (Node.js) and technopop.net or web.archive.org (the ROM image).
+- No telemetry: apart from that server, the page and the program contact nothing else. The one-line installers
+  contact only GitHub (this release), nodejs.org (Node.js) and technopop.net or web.archive.org (the ROM image); the
+  Windows setup and portable app, which carry Node.js, only technopop.net or web.archive.org (the ROM image).
 
 ## Uninstall
 
-Windows:
+Windows app: the setup's copy through Settings → Apps → ZeroTyperance → Uninstall; the portable app by deleting its
+folder.
+
+Windows, the PowerShell install:
 
 ```powershell
 $env:ZT_UNINSTALL=1; irm https://github.com/DarthNuts/ZeroTyperance/releases/latest/download/install.ps1 | iex
@@ -119,7 +142,9 @@ without comments), its data pack of rule values and its build. `cd source && npm
 `source/site/`, equal byte for byte to the `app/` folder of the release archive (`version.json` aside, which the
 release adds). The audio renderer's C source is in `audio/`. `launcher/` holds the program the installer installs
 beside the page: `launch.mjs` (the `zerotyperance` command), `server/server.mjs` (the local web and co-op server) and
-`unzip1.mjs` (unpacks the ROM image's zip).
+`unzip1.mjs` (unpacks the ROM image's zip). `windows/` holds the Windows app's sources: `launcher.c` and
+`launcher.rc` (`ZeroTyperance.exe`, built with MinGW-w64), `setup.nsi` (the installer, NSIS 3), `fetch_rom.mjs` (the
+ROM image download) and `make_icon.py` (draws `zt.ico`).
 
 ## Legal
 
