@@ -15,14 +15,38 @@ export interface CoopStartKit {
     readonly charselAssets: CharselAssets;
     readonly charselC: CharselConstants;
 }
+export function standingMusic(sounds: readonly unknown[]): unknown[] {
+    let music: unknown[] = [];
+    let pendingVar: unknown = null;
+    for (const s of sounds) {
+        const e = s as {
+            type?: unknown;
+            opcode?: unknown;
+        };
+        if (e.type === "Audio.PlayMusic" && e.opcode === 5)
+            pendingVar = s;
+        else if (e.type === "Audio.PlayMusic" && e.opcode === 16) {
+            if (pendingVar !== null)
+                music = [pendingVar, s];
+            pendingVar = null;
+        }
+        else if (e.type === "Audio.StopTrack" || e.type === "Audio.Stop") {
+            music = [s];
+            pendingVar = null;
+        }
+    }
+    return music;
+}
 export function startSessionFor(k: CoopStartKit, start: NewGameStart, seed: number, character: number): {
     session: NewGameSession;
     rng: LcgRng;
     blank: number;
+    music: unknown[];
 } | null {
     const rng = new LcgRng(seed >>> 0, k.tickKit.lcg);
     const session = new NewGameSession(k.tickKit, k.charselAssets, k.charselC, rng, start);
-    const sink = { emit: (): void => undefined } as never;
+    const sounds: unknown[] = [];
+    const sink = { emit: (e: unknown): void => { sounds.push(e); } } as never;
     let blank = 0;
     for (let i = 0; i < COOP_START_TICKS && session.stage !== "play"; i++) {
         let pad = 0;
@@ -33,11 +57,11 @@ export function startSessionFor(k: CoopStartKit, start: NewGameStart, seed: numb
             else
                 pad = press ? 1 << PAD_BIT.START : 0;
         }
-        session.tick(pad, sink, blank++);
+        sounds.push(...session.tick(pad, sink, blank++).sounds);
     }
     if (session.stage !== "play")
         return null;
-    return { session, rng, blank };
+    return { session, rng, blank, music: standingMusic(sounds) };
 }
 export function coopStartCore(k: CoopStartKit, start: NewGameStart, seed: number, characters: readonly [
     number,
@@ -54,5 +78,5 @@ export function coopStartCore(k: CoopStartKit, start: NewGameStart, seed: number
             return null;
         seat1Start = saveCore(b, sk);
     }
-    return new RealCore(sk, saveCore(a, sk), { offsetX, ...(seat1Start !== undefined ? { seat1Start } : {}), ...(rules !== undefined ? { rules } : {}) });
+    return new RealCore(sk, saveCore(a, sk), { offsetX, ...(seat1Start !== undefined ? { seat1Start } : {}), ...(rules !== undefined ? { rules } : {}), startMusic: a.music });
 }

@@ -1,7 +1,12 @@
 # ZeroTyperance
 
+[Русская версия](README.ru.md)
+
 An independent re-implementation of the game engine of **Zero Tolerance** (Sega Mega Drive / Genesis, 1994) in
-TypeScript, running in your browser. One or two players: co-op over your local network or the internet.
+TypeScript, running in your browser, in the console's picture or in HD. One or two players: co-op over your local
+network or the internet.
+
+**Beta:** the HD view (the Custom renderer) and co-op are experimental: they are still in beta and may contain bugs.
 
 **The ROM image.** The installer downloads the original Zero Tolerance ROM image from
 [technopop.net](http://www.technopop.net/) (or its archive.org copy when that site is down), where its copyright owner
@@ -13,16 +18,32 @@ the results in the browser's storage. What it ships besides its code is the engi
 damage and the like, written as numbers) and the frame timing of the attract demos as measured on a console. To use
 your own copy of the ROM image instead, install with `ZT_NO_ROM=1` and pick it in the page.
 
-Version 0.2.0.
+Version 0.3.0.
+
+## What it adds
+
+The game plays as on the console. Around it ZeroTyperance adds:
+
+- **Renderers** (Video page; **F9** switches at any time): *Original*, the console's picture; *Custom* (beta), the 3-D view
+  at the window's full resolution and width, with the game's own textures and the whole sky panorama (needs WebGL2);
+  *Classic smooth*, the console's framing with smooth motion. The game underneath is the same in all of them.
+- **Smooth motion**: the view moves at your display's rate instead of the game's 12 steps a second.
+- **HUD layout** Bar or Corners (**F10**), the weapon's size, the field of view, the resolution and a frame limit.
+- **Controls**: *Original* (the pad's buttons on the keyboard, a gamepad or touch controls) or *Modern* (W A S D to
+  walk and strafe, the mouse to turn, fire and switch items); every key can be rebound.
+- **Co-op** (beta) for two players over your local network or the internet (see Co-op below).
+- **Passwords** (yours are kept for a quick start), **save states**, ten **cheat** switches and a game speed switch.
+- **Voice mode**: how often the announcer may repeat itself.
+- A setup wizard on the first start; every menu page also works with the mouse alone.
 
 ## Install
 
 **Windows:** from the [latest release](https://github.com/DarthNuts/ZeroTyperance/releases/latest) download
 
-- **`ZeroTyperance-0.2.0-setup.exe`**, the installer: no administrator rights; it installs into
+- **`ZeroTyperance-0.3.0-setup.exe`**, the installer: no administrator rights; it installs into
   `%LOCALAPPDATA%\Programs\ZeroTyperance`, adds a Start menu entry (and, if you tick it, a desktop shortcut) and an
   entry in Settings → Apps for uninstalling. Running a newer setup later updates the game.
-- or **`ZeroTyperance-0.2.0-windows-x64.zip`**, the portable app: unzip it anywhere (a USB stick works) and start
+- or **`ZeroTyperance-0.3.0-windows-x64.zip`**, the portable app: unzip it anywhere (a USB stick works) and start
   `ZeroTyperance.exe` in its folder.
 
 Both include Node.js 24.22.2 and download the ROM image (see above) when installed or first started. The files
@@ -69,13 +90,28 @@ the page checks the ROM image and extracts the assets once (a few minutes); with
 you to pick one. Close the program's window, or
 press Ctrl+C, to stop it. Options: `--port N`, `--no-open`.
 
-The browser keeps the extracted assets per address: keep the same port between runs.
+### Where your settings are kept
+
+The game keeps your settings (input, video, sound, cheats), your saved passwords, the save states and the extracted
+assets in the browser's own storage for its address, `http://localhost:8802` (local storage and IndexedDB). That
+storage is part of your browser profile, under your user account, never in the game's folder:
+
+- Windows (the app opens Microsoft Edge): `%LOCALAPPDATA%\Microsoft\Edge\User Data`; Chrome:
+  `%LOCALAPPDATA%\Google\Chrome\User Data`.
+- Linux: `~/.config/google-chrome`, `~/.config/chromium`, `~/.config/microsoft-edge` or `~/.mozilla/firefox`.
+
+The game's folder holds only the program, the ROM image (`rom`) and, for the Windows app, its log
+`ZeroTyperance.log`. Another port or another browser starts with fresh settings: keep the same port between runs.
+Clearing the browser's site data for `http://localhost:8802` resets everything (see Uninstall).
 
 ## Co-op
 
-- **Anywhere (the default):** both players start ZeroTyperance. One chooses **Co-op → Host a game** and tells the
-  other the room code; the other chooses **Co-op → Join a game** and types it (two players behind the same router
-  can also pick the game from the list). The game goes through the ZeroTyperance co-op server at `85.235.151.36`
+- **Anywhere (the default):** both players start ZeroTyperance. One chooses **Co-op → Host a game**, names the room
+  ("Zero Tolerance" by default; the computer's name when the room opens on the host's own program), picks where
+  the game starts (**Password**: New game, or a password from the
+  list or typed, as on the Password page) and tells the other the room code; the other chooses **Co-op → Join a game** and
+  types it (two players behind the same router can also pick the room by its name from the list, then type the
+  code). The game goes through the ZeroTyperance co-op server at `85.235.151.36`
   (TCP and UDP port 47810): no port forwarding. When the host cannot reach that server, the room opens on the host's
   own program instead, and a player on another network then needs the host's address, as below.
 - **Same network:** works as above; without the co-op server the Join page still lists the open games of your
@@ -103,10 +139,10 @@ The browser keeps the extracted assets per address: keep the same port between r
 - It listens on IPv6 as well: on a computer with a public IPv6 address and no firewall, port 8802 is reachable from
   the internet without any port forwarding.
 - While it runs it announces its open games on your local network once a second (UDP port 47811), with your
-  computer's name.
+  computer's name and the rooms' names (never their codes).
 - **The co-op server.** Only when a player chooses Host a game or Join a game with the Server row empty does the
   page connect to the co-op server at `85.235.151.36` (TCP and UDP port 47810), which the author of ZeroTyperance
-  runs. It sees your IP address, the room code and the network addresses your browser offers for the direct
+  runs. It sees your IP address, the room's name and code and the network addresses your browser offers for the direct
   connection to the other player (which can include your address on your local network). It passes the two pages'
   connection setup to each other, and it carries the game's messages when the two browsers cannot connect directly.
   Its connections are not encrypted (`ws://`). The co-op program on that server stores nothing; its log keeps the
@@ -145,6 +181,48 @@ beside the page: `launch.mjs` (the `zerotyperance` command), `server/server.mjs`
 `unzip1.mjs` (unpacks the ROM image's zip). `windows/` holds the Windows app's sources: `launcher.c` and
 `launcher.rc` (`ZeroTyperance.exe`, built with MinGW-w64), `setup.nsi` (the installer, NSIS 3), `fetch_rom.mjs` (the
 ROM image download) and `make_icon.py` (draws `zt.ico`).
+
+## Credits
+
+- **Randel Reiss and the Technopop team**, for the original game, and for making its ROM image royalty-free on
+  [technopop.net](http://www.technopop.net/): without that this project could not exist.
+- **Ziz**, for the GZDoom remake of Zero Tolerance and the inspiration: [Telegram](https://t.me/ZTRemake),
+  [Boosty](https://boosty.to/ztremake), [YouTube](https://www.youtube.com/@%D0%97%D0%B8%D0%B7-%D0%BA3%D1%86).
+- **Vladimir Kononovich** ([YouTube](https://www.youtube.com/@DocMefistO), [GitHub](https://github.com/lab313ru/)),
+  for the detailed and complete layout and annotations of the ROM, and for his videos
+  [one](https://youtu.be/Jk80oOD6kTU) and [two](https://www.youtube.com/watch?v=AiaqfKlpkOI).
+- **Anthropic's Claude**, for writing literally all the code, and the tests and documents with it.
+- **AdvancedFan2020**, for the
+  [maps and the password list](https://www.deviantart.com/advancedfan2020/art/Zero-Tolerance%3A-Maps-and-Passwords-1269781046).
+- **Dimon12321**, for his tool-assisted run of the whole game
+  ([video](https://www.youtube.com/watch?v=o93RqpvFtgc), [the movie file on TASVideos](https://tasvideos.org/2702M)):
+  played back from the first level to the ending, it was the game's regression test.
+- **Real-Gecko**, for the idea of the HD renderer ([zero-tolerance](https://github.com/Real-Gecko/zero-tolerance)).
+  The idea only: no code was taken.
+- **Willy Wodka**, for the idea of the interpolation behind smooth motion
+  ([ztpp](https://github.com/wowwillywodka/ztpp)). The idea only: no code was taken.
+- **Nemesis_c, r57shell, Smoke, Lipetsk, GoodBye (aka vfiuchcikicshuusrch) and Segaman**, for the website
+  [elektropage.ru](https://elektropage.ru/) and the ROM hacking tools for the original Zero Tolerance and Beyond Zero
+  Tolerance.
+- **MyCorp**, for the website [zt.ucoz.ru](https://zt.ucoz.ru/) and its huge archive of information on Zero
+  Tolerance.
+- **Metalslayer and vovka1987tv**, for their help testing the game, especially co-op.
+- **Segaman, aka Mikhail Shilenko**, for his work on Zero Tolerance Underground and his Beyond Zero Tolerance.
+
+The software it is built with and on:
+
+- The audio renderer: [Nuked-OPN2](https://github.com/nukeykt/Nuked-OPN2) by Alexey Khokholov (Nuke.YKT), the
+  YM2612 FM chip; emu76489 by Mitsutaka Okazaki, the SN76489 sound chip; [z80](https://github.com/superzazu/z80) by
+  Nicolas Allemand, the sound processor (licences in `THIRD_PARTY_NOTICES.txt`).
+- [TypeScript](https://www.typescriptlang.org/) and [Node.js](https://nodejs.org/); the Windows app with
+  [MinGW-w64](https://www.mingw-w64.org/) and [NSIS](https://nsis.sourceforge.io/).
+
+## Anti-credits
+
+- **Segaman, aka Mikhail Shilenko**, for refusing to cooperate with the community and personally refusing to help with
+  this project, which motivated and pushed us to do everything on our own.
+- **Piko Interactive and QUByte Interactive**, for the laziest re-release of Zero Tolerance: a slap in the face to the
+  fans, who were left to do everything themselves.
 
 ## Legal
 

@@ -91,6 +91,7 @@ export interface PartnerState {
     readonly eyeOffset: number;
     readonly height: number;
     readonly liftTransit: number;
+    readonly sameRide?: boolean;
     readonly deathCounter: number;
     readonly weaponIsFists: boolean;
     readonly fireFrame: number;
@@ -126,7 +127,7 @@ export function partnerPose(s: PartnerState, C: PartnerConstants): PartnerPose {
     const walkFrame = walking ? -1 : 0;
     const stand = (pose: PartnerPoseName, state: number, frame: number): PartnerPose => ({ pose, bank: C.BANK_STAND, bankState: state, frame });
     const crouch = (pose: PartnerPoseName, state: number): PartnerPose => ({ pose, bank: C.BANK_CROUCH, bankState: state, frame: -1 });
-    if (s.liftTransit === 1 || s.liftTransit === -1)
+    if ((s.liftTransit === 1 || s.liftTransit === -1) && s.sameRide !== true)
         return { pose: "hidden", bank: null, bankState: null, frame: null };
     if (s.deathCounter !== 0)
         return stand("dying", C.POSE_DYING, s.counterByte & 1);

@@ -135,6 +135,8 @@ Section "Uninstall"
   Delete "$SMPROGRAMS\${LNKNAME}.lnk"
   Delete "$DESKTOP\${LNKNAME}.lnk"
   DeleteRegKey HKCU "${UNKEY}"
+  ; the launcher's own log (launcher.c), not a user file (audit 5 NIT 1)
+  Delete "$INSTDIR\ZeroTyperance.log"
   ; no /r: a folder the user filled stays
   RMDir "$INSTDIR"
   DetailPrint "The game's extracted assets stay in the browser until its site data for http://localhost:8802 is cleared."

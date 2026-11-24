@@ -1,4 +1,6 @@
 /// <reference lib="dom" />
+import { inSeat } from "../../tick/core.js";
+import { snapshotToJson } from "../../rend/hd/probe/probe_core.js";
 import type { BootBundle } from "../assets.js";
 import { BOOT_BUNDLE_FORMAT } from "../assets.js";
 import { deserializeAssets } from "../assets_parse.js";
@@ -21,7 +23,7 @@ import { deserializeBriefingAssets } from "../../briefing/assets_parse.js";
 import { BriefingCore } from "../../briefing/core.js";
 import { TitleFlowChain } from "../../briefing/chain.js";
 import { briefingExitAction } from "./briefing_exit.js";
-import { colourRgb, renderState } from "./render.js";
+import { colourRgb, packRgba, renderState } from "./render.js";
 import type { Frame, PatternLookup } from "./render.js";
 import { AudioEngine } from "./audio.js";
 import type { AudioRequest } from "./audio.js";
@@ -36,6 +38,10 @@ import { deserializeCharselAssets } from "../../charsel/assets_parse.js";
 import { attachDeathScreens } from "./tick_kit.js";
 import { NewGameSession, charselSoundDriver, episodeOfLevelByte, floorOfLevelByte } from "./newgame.js";
 import type { IndexedPicture, NewGameStart } from "./newgame.js";
+import { HdOverlay, hdDrive, hdSwitchOfPage } from "./hd_overlay.js";
+import { inventoryPicture } from "../../rend/hd/loot.js";
+import { GUARD } from "../../guard/constants.js";
+import { hdConstantsFrom } from "../../rend/hd/constants.js";
 import { PASSWORD_BUNDLE_FORMAT } from "../../password/assets.js";
 import type { PasswordAssets, PasswordBundle } from "../../password/assets.js";
 import type { PasswordConstants } from "../../password/constants.js";
@@ -61,11 +67,15 @@ import type { CoopScreens } from "../../release/coop_page.js";
 import { modernForTick } from "./modern_step.js";
 import type { SeatRules } from "../../tick/seats.js";
 import type { CoreControl, DebugPart, Phase } from "./debug_hooks.js";
+import { IntroGate, introStep } from "./intro_gate.js";
+import type { IntroHooks, IntroMode } from "./intro_gate.js";
+import { levelWaitOf, loopFrame, resetLoopClock } from "./pace_loop.js";
+import type { LoopClock, LoopHooks } from "./pace_loop.js";
 export function startCore(makeDebug?: (c: CoreControl) => DebugPart): void {
     const host = getHost();
     const TICKS_PER_SECOND = 60;
     const TICK_MS = 1000 / TICKS_PER_SECOND;
-    const MAX_CATCH_UP = 4;
+    const MAX_CATCH_UP = 8;
     const SCALE = 3;
     const PALETTE_ENTRIES = 64;
     const LOG_LINES = 400;
@@ -240,9 +250,13 @@ export function startCore(makeDebug?: (c: CoreControl) => DebugPart): void {
         held.clear();
         latched.clear();
     });
+    const introGate = new IntroGate();
+    const START_MASK = padBit("start");
+    const introMode = (): IntroMode => host?.intro?.() ?? "none";
+    const startHeldNow = (): boolean => ((host?.pad?.() ?? 0) & START_MASK) !== 0;
     function samplePad(keepTaps = false): number {
         if (host?.pad)
-            return host.pad();
+            return introGate.filter(host.pad(), START_MASK);
         let pad = 0;
         for (const code of held)
             pad |= padBit(KEY_MAP[code]!);
@@ -293,6 +307,20 @@ export function startCore(makeDebug?: (c: CoreControl) => DebugPart): void {
                 if (env)
                     Object.assign(env, { passwordCodec: passwordResult.value.codec });
         let newGame: NewGameSession | null = null;
+        const hdSwitch = host ? null : hdSwitchOfPage();
+        const hdOverlay: HdOverlay | null = (hdSwitch !== null || host?.hd !== undefined || makeDebug !== undefined) && tickKit !== null && tickKit.hdData !== undefined && tickKit.viewData !== undefined ? new HdOverlay(canvas, hdSwitch, tickKit.hdData, tickKit.viewData, tickKit.viewX0, tickKit.viewY0) : null;
+        const hdConsts = tickKit !== null && tickKit.hdData !== undefined ? hdConstantsFrom(tickKit.hdData) : null;
+        function hdDrawn(): boolean {
+            const tasHd = debug?.hdRows?.() ?? null;
+            return hdOverlay !== null && hdConsts !== null && hdDrive(hdOverlay, tasHd !== null ? null : hdSwitch, host?.hd?.() ?? tasHd, hdConsts);
+        }
+        hdOverlay?.setFeed(host?.stepMs ? { stepMs: () => host.stepMs!(levelWait() !== null), modernTurn: (k: number | null) => host.modernTurn?.(k, levelWait() !== null) ?? null, playing: () => levelWait() !== null, ...(host.paceMs ? { paceMs: (p: {
+                    num: number;
+                    den: number;
+                }) => host.paceMs!(p) } : {}) } : null);
+        const sprEnv = tickKit?.envs.find((e) => e !== null && e !== undefined);
+        if (hdOverlay !== null && tickKit !== null && sprEnv !== undefined)
+            hdOverlay.setLaserPicture(inventoryPicture(tickKit.hudAssets.cardArt, GUARD.LOOT_ITEM, tickKit.HC.CARD, sprEnv.SPR.ART_COLUMNS, sprEnv.SPR.ART_ROWS));
         let newGameImage: ImageData | null = null;
         let blankCounter = 0;
         const titleCore = titleResult.status === "fulfilled" ? titleResult.value : null;
@@ -361,10 +389,10 @@ export function startCore(makeDebug?: (c: CoreControl) => DebugPart): void {
         let exitTo: string | null = null;
         let exitFrom: "title" | "options" | "briefing" = "title";
         let running = true;
+        let sessionAudio = false;
         let frame: Frame | undefined;
         let lastCram = "";
-        let accumulator = 0;
-        let lastNow = performance.now();
+        const clock: LoopClock = { accumulator: 0, lastNow: performance.now(), lastPace: null };
         const bootRan = (): number => (sega ? Math.max(0, ran - handOver) : ran);
         const bootFinished = (): boolean => bootCore.finished || bootRan() >= C.TICKS;
         const onScreen = (): boolean => phase === "title" || phase === "options" || phase === "briefing";
@@ -456,7 +484,16 @@ export function startCore(makeDebug?: (c: CoreControl) => DebugPart): void {
                 bannerBox.textContent = "";
             }
         }
+        let drawSuppressed = false;
+        let drawStale = false;
+        let frameImage: ImageData | null = null;
         function present(state: ScreenState, pattern: PatternLookup): void {
+            if (drawSuppressed) {
+                drawStale = true;
+                return;
+            }
+            drawStale = false;
+            hdOverlay?.hide();
             frame = renderState(state, pattern, frame);
             if (canvas.width !== frame.width || canvas.height !== frame.height) {
                 canvas.width = frame.width;
@@ -464,7 +501,9 @@ export function startCore(makeDebug?: (c: CoreControl) => DebugPart): void {
             }
             canvas.style.width = `${frame.width * SCALE}px`;
             canvas.style.height = `${frame.height * SCALE}px`;
-            ctx!.putImageData(new ImageData(frame.data, frame.width, frame.height), 0, 0);
+            if (frameImage === null || frameImage.data !== frame.data)
+                frameImage = new ImageData(frame.data, frame.width, frame.height);
+            ctx!.putImageData(frameImage, 0, 0);
             const cram = state.cram.join(",");
             if (cram !== lastCram) {
                 lastCram = cram;
@@ -641,6 +680,11 @@ export function startCore(makeDebug?: (c: CoreControl) => DebugPart): void {
         function drawIndexed(pic: IndexedPicture): void {
             if (!tickKit)
                 return;
+            if (drawSuppressed) {
+                drawStale = true;
+                return;
+            }
+            drawStale = false;
             const W = tickKit.screenW;
             const H = tickKit.screenH;
             if (canvas.width !== W || canvas.height !== H) {
@@ -652,25 +696,23 @@ export function startCore(makeDebug?: (c: CoreControl) => DebugPart): void {
             canvas.style.height = `${H * SCALE}px`;
             newGameImage = newGameImage ?? ctx!.createImageData(W, H);
             const px = newGameImage.data;
-            const rgb = pic.cram.map(colourRgb);
-            const back = rgb[0] ?? [0, 0, 0];
+            const rgb = pic.cram.map((w) => packRgba(colourRgb(w)));
+            const back = rgb[0] ?? packRgba([0, 0, 0]);
             const n = W * H;
-            for (let i = 0; i < n; i++) {
-                let c: readonly [
-                    number,
-                    number,
-                    number
-                ] = back;
-                if (pic.display === 1 && pic.indices !== null) {
-                    const idx = pic.indices[i]!;
-                    c = pic.nothing !== undefined && idx === pic.nothing ? back : (rgb[idx] ?? back);
+            const px32 = new Uint32Array(px.buffer, px.byteOffset, n);
+            if (pic.display === 1 && pic.indices !== null) {
+                const indices = pic.indices;
+                const nothing = pic.nothing;
+                for (let i = 0; i < n; i++) {
+                    const idx = indices[i]!;
+                    px32[i] = nothing !== undefined && idx === nothing ? back : (rgb[idx] ?? back);
                 }
-                px[i * 4] = c[0];
-                px[i * 4 + 1] = c[1];
-                px[i * 4 + 2] = c[2];
-                px[i * 4 + 3] = 255;
             }
+            else
+                px32.fill(back);
             ctx!.putImageData(newGameImage, 0, 0);
+            if (hdOverlay && hdDrawn())
+                hdOverlay.paint(pic, debug?.tasSession?.() ?? (phase === "newgame" ? newGame : null));
             const cramKey = pic.cram.join(",");
             if (cramKey !== lastCram) {
                 lastCram = cramKey;
@@ -708,6 +750,8 @@ export function startCore(makeDebug?: (c: CoreControl) => DebugPart): void {
                 else if (levelRun.state.modern !== undefined)
                     setModern(levelRun.state, 0, null);
             }
+            if (stageBefore === "play")
+                engine.gameBlanks(1);
             const res = newGame.tick(padNow, sink, blankCounter);
             if (res.sounds.length > 0)
                 playSounds(res.sounds, stageBefore === "level_start" ? `level start t = ${newGame.t}` : stageBefore === "pause" || newGame.stage === "pause" ? `pause frame ${newGame.pauseFrames}` : stageBefore === "death_select" || newGame.stage === "death_select" ? `death select frame ${newGame.deathSelectFrames}` : stageBefore === "game_over" || newGame.stage === "game_over" ? `game over frame ${newGame.gameOverFrames}` : stageBefore === "restart_setup" ? `restart set-up t = ${newGame.t}` : `iteration ${newGame.k - 1}`);
@@ -717,7 +761,7 @@ export function startCore(makeDebug?: (c: CoreControl) => DebugPart): void {
                 logLine(l);
             for (const l of res.log)
                 logLine(l);
-            if (res.changed || newGame.stage !== stageBefore)
+            if (res.changed || newGame.stage !== stageBefore || drawStale)
                 drawIndexed(newGame.picture());
             if (newGame.exitStartup) {
                 logLine("-- the game ended (game over, or the ending's cold reset): Flow.Exit {to: startup}; the start-up runs again --");
@@ -750,23 +794,30 @@ export function startCore(makeDebug?: (c: CoreControl) => DebugPart): void {
             engine.endTick();
         }
         let modernNow: ModernDescriptor | null = null;
-        function runOneTick(): void {
+        function runOneTick(render = true): void {
             setCheatRules(host?.cheats?.());
             if (debug?.tasTick())
                 return;
             blankCounter = (blankCounter + 1) & 0xffff;
-            if (phase === "demo")
-                debug?.demoTick();
-            else if (phase === "newgame")
-                runNewGameTick();
-            else if (onScreen())
-                runScreenTick();
-            else
-                runRunTick(true);
+            drawSuppressed = !render && phase !== "demo";
+            try {
+                if (phase === "demo")
+                    debug?.demoTick();
+                else if (phase === "newgame")
+                    runNewGameTick();
+                else if (onScreen())
+                    runScreenTick();
+                else if (!introStep(introGate, introHooks))
+                    runRunTick(true);
+            }
+            finally {
+                drawSuppressed = false;
+            }
         }
         function startTitle(heldPad = 0): void {
             if (!titleCore)
                 return;
+            introGate.disarm();
             phase = "title";
             debug?.clear();
             newGame = null;
@@ -790,8 +841,7 @@ export function startCore(makeDebug?: (c: CoreControl) => DebugPart): void {
             latched.clear();
             latching = running;
             lastCram = "";
-            accumulator = 0;
-            lastNow = performance.now();
+            resetLoopClock(clock, performance.now());
             logLine("-- title --");
         }
         function skipIntro(): void {
@@ -801,14 +851,14 @@ export function startCore(makeDebug?: (c: CoreControl) => DebugPart): void {
                 runRunTick(ran === handOver);
             running = true;
             engine.unpause();
-            accumulator = 0;
-            lastNow = performance.now();
+            resetLoopClock(clock, performance.now());
             logLine("-- intro skipped --");
         }
         function restart(): void {
             if (sega)
                 sega.reset();
             bootCore.reset();
+            introGate.begin(startHeldNow());
             phase = sega ? "sega" : "boot";
             debug?.clear();
             newGame = null;
@@ -825,8 +875,7 @@ export function startCore(makeDebug?: (c: CoreControl) => DebugPart): void {
             latching = false;
             latched.clear();
             lastCram = "";
-            accumulator = 0;
-            lastNow = performance.now();
+            resetLoopClock(clock, performance.now());
             logBox.textContent = "";
             engine.stopAll();
             engine.unpause();
@@ -846,8 +895,7 @@ export function startCore(makeDebug?: (c: CoreControl) => DebugPart): void {
                 engine.pause();
             latching = (onScreen() || phase === "newgame") && running;
             latched.clear();
-            lastNow = performance.now();
-            accumulator = 0;
+            resetLoopClock(clock, performance.now());
             updateStatus();
         });
         btnStep.addEventListener("click", () => {
@@ -875,46 +923,32 @@ export function startCore(makeDebug?: (c: CoreControl) => DebugPart): void {
             updateStatus();
         });
         function levelWait(): number | null {
-            if (phase === "demo")
-                return debug?.demoLevelWait() ?? null;
-            if (phase === "newgame" && newGame && newGame.stage === "play")
-                return newGame.pendingWait;
-            return null;
+            return levelWaitOf(phase, newGame);
         }
-        let lastPace: unknown = null;
+        const introHooks: IntroHooks = {
+            inBootScreens: () => phase === "sega" || phase === "boot",
+            mode: introMode,
+            pad: () => host?.pad?.() ?? 0,
+            startMask: START_MASK,
+            skipToTitle: () => {
+                engine.stopAll();
+                logLine("-- intro skipped by Start (game.intro start) --");
+                host?.api?.skipToTitle();
+            },
+        };
+        const loopHooks: LoopHooks = {
+            pace: () => host?.pace ?? null,
+            running: () => running,
+            stopped,
+            tasOn: () => !!debug?.tas,
+            levelWait,
+            runOneTick,
+            updateStatus,
+            tickMs: TICK_MS,
+            maxCatchUp: MAX_CATCH_UP,
+        };
         function loop(now: number): void {
-            const pace = host?.pace ?? null;
-            if (pace && running && !stopped() && !debug?.tas && levelWait() !== null) {
-                if (pace !== lastPace) {
-                    pace.start(now);
-                    lastPace = pace;
-                }
-                if (pace.poll(now) > 0) {
-                    while ((levelWait() ?? 0) > 1 && running && !stopped())
-                        runOneTick();
-                    if (running && !stopped())
-                        runOneTick();
-                }
-                accumulator = 0;
-                updateStatus();
-                lastNow = now;
-                requestAnimationFrame(loop);
-                return;
-            }
-            lastPace = null;
-            if (running && !stopped()) {
-                accumulator += now - lastNow;
-                let n = 0;
-                while (accumulator >= TICK_MS && n < MAX_CATCH_UP && !stopped() && running) {
-                    runOneTick();
-                    accumulator -= TICK_MS;
-                    n++;
-                }
-                if (n === MAX_CATCH_UP)
-                    accumulator = 0;
-                updateStatus();
-            }
-            lastNow = now;
+            loopFrame(clock, loopHooks, now);
             requestAnimationFrame(loop);
         }
         const control: CoreControl = {
@@ -929,7 +963,7 @@ export function startCore(makeDebug?: (c: CoreControl) => DebugPart): void {
             tickKit, titleCore, canvas, scale: SCALE, engine, logBox,
             clearLatched: () => latched.clear(),
             resetPicture: () => { frame = undefined; lastCram = ""; },
-            resetClock: () => { accumulator = 0; lastNow = performance.now(); },
+            resetClock: () => resetLoopClock(clock, performance.now()),
             endRun: (to: string, from: "title" | "options" | "briefing") => { exitTo = to; exitFrom = from; running = false; latching = false; },
             clearExit: () => { exitTo = null; },
             logLine, playSounds, present, drawIndexed, startTitle, restart, updateStatus, samplePad, describeEvent, errorText, fetchJson,
@@ -942,7 +976,8 @@ export function startCore(makeDebug?: (c: CoreControl) => DebugPart): void {
                     if (!running)
                         return;
                     running = false;
-                    engine.pause();
+                    if (!sessionAudio)
+                        engine.pause();
                     latching = false;
                     latched.clear();
                     updateStatus();
@@ -954,9 +989,31 @@ export function startCore(makeDebug?: (c: CoreControl) => DebugPart): void {
                     engine.unpause();
                     latching = (onScreen() || phase === "newgame") && running;
                     latched.clear();
-                    lastNow = performance.now();
-                    accumulator = 0;
+                    resetLoopClock(clock, performance.now());
                     updateStatus();
+                },
+                momentNow() {
+                    const m = hdOverlay?.moment() ?? null;
+                    let state = m?.state ?? null;
+                    const seat: 0 | 1 = m?.seat ?? 0;
+                    if (state === null && phase === "newgame" && newGame?.run)
+                        state = newGame.run.state;
+                    if (state === null)
+                        return null;
+                    const shift = tickKit?.envs[0]?.R.CELL_SHIFT ?? 0;
+                    const place = inSeat(state, seat, () => {
+                        const w = state!.world;
+                        const p = w.player as unknown as {
+                            pos: {
+                                x: number;
+                                y: number;
+                            };
+                            eye_offset?: number;
+                        };
+                        return { episode: w.level.episode.value, floor: w.level.sub_id, cell: [p.pos.x >> shift, p.pos.y >> shift] as const, position: { x: p.pos.x, y: p.pos.y }, eye_offset: p.eye_offset ?? 0, slide: state!.hidden.lift.slide };
+                    });
+                    const view = m === null ? null : { snapshots: [snapshotToJson(m.view.snapshots[0]), snapshotToJson(m.view.snapshots[1])] as const, alpha: m.view.alpha, camera: m.view.camera };
+                    return { place, view, hdCanvases: m?.canvases ?? [], frame: canvas };
                 },
                 saveState() {
                     if (!tickKit || !charselKit || !rng || phase !== "newgame" || (debug?.busy ?? false) || !canSave(newGame))
@@ -1055,6 +1112,47 @@ export function startCore(makeDebug?: (c: CoreControl) => DebugPart): void {
                             engine.request(e as AudioRequest);
                     engine.endTick();
                 },
+                coopAudio(session: {
+                    readonly seat: 0 | 1;
+                    readonly voices: number;
+                } | null): void {
+                    sessionAudio = session !== null;
+                    if (session !== null)
+                        engine.beginSession(session);
+                    else
+                        engine.endSession(!running);
+                },
+                coopHd(core: unknown, seat: 0 | 1, screen: {
+                    readonly cram: readonly number[];
+                    readonly indices?: Uint8Array;
+                }): void {
+                    if (!hdOverlay || !hdDrawn())
+                        return;
+                    const session = (core as {
+                        state?: {
+                            session?: NewGameSession;
+                        };
+                    }).state?.session ?? null;
+                    hdOverlay.setSessionPace((core as {
+                        pace?: {
+                            num: number;
+                            den: number;
+                        } | null;
+                    }).pace ?? null);
+                    const run = session?.run;
+                    const seatPicture = (session as unknown as {
+                        seatPicture?(s: 0 | 1): unknown;
+                    } | null)?.seatPicture?.(seat) ?? null;
+                    if (!session || !run || seatPicture !== null)
+                        return hdOverlay.hide();
+                    const seats = run.state.seats;
+                    const other: 0 | 1 = seat === 0 ? 1 : 0;
+                    const shown: 0 | 1 = seats?.out[seat] === true && seats.out[other] !== true ? other : seat;
+                    hdOverlay.paintSeat(screen.cram, session, shown, screen.indices ? { indices: screen.indices } : undefined, { own: shown === seat, coop: true });
+                },
+                coopHdHide(): void {
+                    hdOverlay?.hide();
+                },
                 coopSounds(json: readonly string[]): void {
                     const evs = json.map((j) => JSON.parse(j) as SoundEvent);
                     if (evs.length > 0)
@@ -1083,6 +1181,7 @@ export function startCore(makeDebug?: (c: CoreControl) => DebugPart): void {
         if (sega)
             sega.reset();
         bootCore.reset();
+        introGate.begin(startHeldNow());
         updateStatus();
         requestAnimationFrame(loop);
     }

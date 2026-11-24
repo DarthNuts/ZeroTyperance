@@ -15,6 +15,7 @@ import type { FloorClasses, HudEntity, HudInputs, HudState } from "../../hud/cor
 import { SPRITE_X_MASK, SPRITE_Y_MASK, TILE_SIZE } from "../../hud/words.js";
 import type { HandConstants } from "../../hand/constants.js";
 import { handIteration, handRecordStart, handStart } from "../../hand/core.js";
+import { glowViewOf, type GlowView } from "../../hand/glow.js";
 import type { HandAssets, HandInputs, HandSprite, HandState } from "../../hand/types.js";
 import { skyLayer } from "../../rend/sky/core.js";
 import { GRID_SIDE } from "../../soldier/common.js";
@@ -24,9 +25,11 @@ import type { ViewRecord } from "../../rend/core.js";
 import { vscrollOfFloor } from "../../rend/sky/core.js";
 import { sniperBankTile } from "../../sniper/core.js";
 import type { SniperSprite } from "../../sniper/core.js";
-import { cityStrips } from "../../rend/sky/city.js";
-import type { CityStrip } from "../../rend/sky/city.js";
-import { composeVdp } from "../../rend/app/vdp_compose.js";
+import { cityBuildingLayer, cityStrips, cityValues } from "../../rend/sky/city.js";
+import type { CityBuildingLayer, CityStrip, CityValues } from "../../rend/sky/city.js";
+import { composeVdp, SPRITE_INFO_PRESENT, SPRITE_INFO_PRIORITY, SPRITE_INFO_TILE_MASK } from "../../rend/app/vdp_compose.js";
+import { SPRITE_GROUP, spriteGroupOf } from "../../rend/hd/framing.js";
+import type { SpriteGroups } from "../../rend/hd/framing.js";
 import type { VdpOverlay, VdpPlane, VdpSprite } from "../../rend/app/vdp_compose.js";
 import { slotsWindowCells } from "../../modern/hud.js";
 export const DEFAULT_VBLANKS = 5;
@@ -192,6 +195,14 @@ export class DemoRun {
         CityStrip[],
         CityStrip[]
     ] = [[], []];
+    private cityValBuilt: [
+        CityValues | null,
+        CityValues | null
+    ] = [null, null];
+    private cityValShown: [
+        CityValues | null,
+        CityValues | null
+    ] = [null, null];
     private sniperBuilt: [
         SniperSprite[],
         SniperSprite[]
@@ -202,6 +213,10 @@ export class DemoRun {
     ] = [[], []];
     private liveSeat(): 0 | 1 {
         return this.state.seats?.live === 1 ? 1 : 0;
+    }
+    private glowView(k: 0 | 1): GlowView {
+        const pic = this.lastPictureOf(k);
+        return glowViewOf(pic === null ? null : pic.view, pic === null ? null : pic.depth, this.deps.env.R);
     }
     private lastPictureOf(k: 0 | 1): ViewRecord | null {
         const seats = this.state.seats;
@@ -245,7 +260,7 @@ export class DemoRun {
         this.handPrev = st.weapon === null ? null : this.handLine(0, 0, 0);
         if ("record" in input && this.handPrev !== null) {
             try {
-                handRecordStart(this.handState, this.handPrev, deps.handAssets, deps.HAND);
+                handRecordStart(this.handState, this.handPrev, deps.handAssets, deps.HAND, this.glowView(0));
             }
             catch (err) {
                 this.note(`the hand: ${err instanceof Error ? err.message : String(err)}`);
@@ -271,6 +286,8 @@ export class DemoRun {
         this.shownPicture[1] = this.lastPictureOf(1);
         this.cityBuilt[1] = [];
         this.cityShown[1] = [];
+        this.cityValBuilt[1] = null;
+        this.cityValShown[1] = null;
         this.sniperBuilt[1] = [];
         this.sniperShown[1] = [];
         this.hand1 = { state: handStart(), prev: inSeat(st, 1, () => (st.weapon === null ? null : this.handLine(0, 0, 0))), shown: { list: [], window: null } };
@@ -401,6 +418,7 @@ export class DemoRun {
                 break;
             this.shownPicture[s] = this.lastPictureOf(s);
             this.cityShown[s] = this.cityBuilt[s];
+            this.cityValShown[s] = this.cityValBuilt[s];
             this.sniperShown[s] = this.sniperBuilt[s];
         }
         const mask = state.hidden.controller.mode === CONTROLLER_MODE.PAD ? 0xff : PAD_START;
@@ -449,6 +467,8 @@ export class DemoRun {
         this.shownPicture[0] = state.lastPicture;
         this.cityBuilt[0] = [];
         this.cityShown[0] = [];
+        this.cityValBuilt[0] = null;
+        this.cityValShown[0] = null;
         this.sniperBuilt[0] = [];
         this.sniperShown[0] = [];
         this.handState = handStart();
@@ -470,6 +490,7 @@ export class DemoRun {
         }
         this.handShown = { list: this.handState.list, window: this.handState.window };
         this.cityBuilt[0] = this.cityOf(res.bob ?? null);
+        this.cityValBuilt[0] = this.cityValuesOf(res.bob ?? null);
         this.sniperBuilt[0] = [...state.sniperSprites];
         const inputs = this.inputsOf(phaseBefore, res.bob === null || res.bob === undefined ? 0 : res.bob.angle);
         this.reveal = this.displayStep(this.hud, res.display, inputs, this.reveal, 0);
@@ -477,7 +498,9 @@ export class DemoRun {
         this.bobSeat[0] = res.bob === null || res.bob === undefined ? 0 : res.bob.angle;
         this.flashWord = res.display.flashEntry;
         const seats = state.seats;
+        const glow0 = this.glowView(0);
         if (seats !== undefined && this.hud1 !== null && !seats.out[1]) {
+            const glow1 = this.glowView(1);
             const hud1 = this.hud1;
             const bob1 = res.bob1 ?? null;
             inSeat(state, 1, () => {
@@ -487,6 +510,7 @@ export class DemoRun {
                 this.bobSeat[1] = bob1 === null ? 0 : bob1.angle;
                 this.flashWord1 = state.display.flashEntry;
                 this.cityBuilt[1] = this.cityOf(bob1);
+                this.cityValBuilt[1] = this.cityValuesOf(bob1);
                 this.sniperBuilt[1] = [...state.sniperSprites];
                 const h1 = this.hand1;
                 if (h1 !== null) {
@@ -494,7 +518,7 @@ export class DemoRun {
                     if (state.weapon !== null && h1.prev !== null) {
                         const line = this.handLine(k + 1, bob1 === null ? 0 : bob1.angle, bob1 === null ? 0 : bob1.eye);
                         try {
-                            handIteration(h1.state, line, h1.prev, deps.handAssets, deps.HAND);
+                            handIteration(h1.state, line, h1.prev, deps.handAssets, deps.HAND, glow1);
                         }
                         catch (err) {
                             h1.state.list = [];
@@ -509,7 +533,7 @@ export class DemoRun {
             const bob = res.bob ?? null;
             const line = this.handLine(k + 1, bob === null ? 0 : bob.angle, bob === null ? 0 : bob.eye);
             try {
-                handIteration(this.handState, line, this.handPrev, deps.handAssets, deps.HAND);
+                handIteration(this.handState, line, this.handPrev, deps.handAssets, deps.HAND, glow0);
             }
             catch (err) {
                 this.handState.list = [];
@@ -519,6 +543,39 @@ export class DemoRun {
         }
         this.composed = null;
         return res;
+    }
+    private cityValuesOf(bob: {
+        readonly angle: number;
+    } | null): CityValues | null {
+        const { deps, state } = this;
+        if (state.world.level.episode.value !== CITY_EPISODE || deps.env.sky === null)
+            return null;
+        const units = deps.env.M.ANGLE.UNITS;
+        const angle = (((state.world.player.angle + (bob === null ? 0 : bob.angle)) % units) + units) % units;
+        return cityValues(angle, state.world.player.pos.y, state.floorNumber, CITY_Z, deps.env.sky.C);
+    }
+    cityValuesShown(): CityValues | null {
+        return this.cityValShown[this.liveSeat()];
+    }
+    cityBuildingFar(far: {
+        readonly cols: number;
+        readonly rows: number;
+        readonly indices: Uint8Array;
+    }, viewX0: number, viewY0: number): CityBuildingLayer | null {
+        const v = this.cityValuesShown();
+        const sky = this.deps.env.sky;
+        if (v === null || sky === null)
+            return null;
+        return cityBuildingLayer(v, far, viewX0, viewY0, (i) => this.cityBankTile(i), sky.C);
+    }
+    cityBankTile(i: number): Uint8Array | undefined {
+        const { env } = this.deps;
+        const bank = env.sky?.assets.cityBankTiles ?? null;
+        if (bank === null || env.sky === null)
+            return undefined;
+        const t = i - (env.sky.C["CITY.TILE_BASE"] & TILE_INDEX_MASK);
+        const n = TILE_SIZE * TILE_SIZE / 2;
+        return t < 0 || (t + 1) * n > bank.length ? undefined : bank.subarray(t * n, (t + 1) * n);
     }
     private cityOf(bob: {
         readonly angle: number;
@@ -569,7 +626,7 @@ export class DemoRun {
         }
         const shownHand = this.shownHandList();
         const win = shownHand.window;
-        const handTiles = (i: number): Uint8Array | undefined => (win === null ? undefined : win[i - HAND.FIRST_TILE]);
+        const handTiles = (i: number): Uint8Array | undefined => (i >= HAND.FIRST_TILE && i < HAND.FIRST_TILE + HAND.WINDOW_TILES ? (win === null ? undefined : win[i - HAND.FIRST_TILE]) : hudTiles(i));
         for (const s of shownHand.list) {
             const xWord = s.xWord & HAND.SPRITE_X_MASK;
             out.push({ x: xWord - HAND.SPRITE_ORIGIN, y: (s.yWord & HAND.SPRITE_Y_MASK) - HAND.SPRITE_ORIGIN, w: s.w, h: s.h, attr: s.attr, xWord, tile: handTiles });
@@ -626,6 +683,32 @@ export class DemoRun {
     }> {
         return this.vdpSprites().map((s, index) => ({ index, x: (s.xWord & SPRITE_X_MASK) - this.deps.HC.SPRITE_ORIGIN, y: (s.yWord & SPRITE_Y_MASK) - this.deps.HC.SPRITE_ORIGIN, w: s.wCells, h: s.hCells, attr: s.attr }));
     }
+    private viewOverlay(opaque: number | null): VdpOverlay | null {
+        const { env, HC } = this.deps;
+        const pic = this.shownPicture[this.liveSeat()];
+        if (pic === null || pic.view === null)
+            return null;
+        const R = env.R;
+        const width = R.COLUMNS * 2;
+        const indices = new Uint8Array(width * R.VIEW_ROWS);
+        for (let c = 0; c < R.COLUMNS; c++) {
+            const vbase = Math.floor(c / R.COLUMN_GROUP) * R.TILE_COLUMN_BYTES + (c % R.COLUMN_GROUP);
+            for (let r = 0; r < R.VIEW_ROWS; r++) {
+                const b = pic.view[vbase + r * R.ROW_STRIDE] ?? 0;
+                const hi = (b >> 4) & 15;
+                const lo = b & 15;
+                indices[r * width + c * 2] = hi === 0 ? 0 : opaque ?? VIEW_LINE * CRAM_LINE + hi;
+                indices[r * width + c * 2 + 1] = lo === 0 ? 0 : opaque ?? VIEW_LINE * CRAM_LINE + lo;
+            }
+        }
+        return { x0: HC.RECORD.VIEW_RECT_COL_FIRST * TILE_SIZE, y0: HC.RECORD.VIEW_RECT_ROW_FIRST * TILE_SIZE, width, height: R.VIEW_ROWS, indices };
+    }
+    screenSkyScroll(): number | null {
+        const sky = this.state.sky;
+        if (sky === null || this.deps.env.sky === null)
+            return null;
+        return sky.pending.hscroll ?? sky.hscroll;
+    }
     vdpScreen(): {
         indices: Uint8Array;
         cram: number[];
@@ -670,31 +753,39 @@ export class DemoRun {
             for (let c = 0; c < cols; c++)
                 bWords[r * cols + c] = bCells[r]![c] ?? 0;
         const planeB: VdpPlane = { cols, rows, words: bWords, hscroll: 0, vscroll: 0, tile: (i) => hudTile(this.shownHud(), i) };
-        let overlayB: VdpOverlay | null = null;
-        const pic = this.shownPicture[this.liveSeat()];
-        if (pic !== null && pic.view !== null) {
-            const R = env.R;
-            const width = R.COLUMNS * 2;
-            const indices = new Uint8Array(width * R.VIEW_ROWS);
-            for (let c = 0; c < R.COLUMNS; c++) {
-                const vbase = Math.floor(c / R.COLUMN_GROUP) * R.TILE_COLUMN_BYTES + (c % R.COLUMN_GROUP);
-                for (let r = 0; r < R.VIEW_ROWS; r++) {
-                    const b = pic.view[vbase + r * R.ROW_STRIDE] ?? 0;
-                    const hi = (b >> 4) & 15;
-                    const lo = b & 15;
-                    indices[r * width + c * 2] = hi === 0 ? 0 : VIEW_LINE * CRAM_LINE + hi;
-                    indices[r * width + c * 2 + 1] = lo === 0 ? 0 : VIEW_LINE * CRAM_LINE + lo;
-                }
-            }
-            overlayB = { x0: HC.RECORD.VIEW_RECT_COL_FIRST * TILE_SIZE, y0: HC.RECORD.VIEW_RECT_ROW_FIRST * TILE_SIZE, width, height: R.VIEW_ROWS, indices };
-        }
+        const overlayB = this.viewOverlay(null);
         const sprites = this.vdpSprites();
         if (this.blankBoundary)
             return { indices: new Uint8Array(W * H), cram: this.cram() };
         const indices = composeVdp({ width: W, height: H, planeA, planeB, overlayB, sprites, maxSpritesPerLine: VDP_SPRITES_PER_LINE, maxSpritePixelsPerLine: VDP_SPRITE_PIXELS_PER_LINE });
         return { indices, cram: this.cram() };
     }
-    private vdpSprites(): VdpSprite[] {
+    vdpSpriteGroups(glowTiles: readonly [
+        number,
+        number
+    ], opts: {
+        readonly noStrips?: boolean;
+        readonly sniperTiles?: readonly [
+            number,
+            number
+        ];
+    } = {}): SpriteGroups {
+        const W = this.deps.HC.RECORD.DISPLAY_W;
+        const H = this.deps.HC.RECORD.DISPLAY_H;
+        const group = new Uint8Array(W * H);
+        if (this.blankBoundary)
+            return { width: W, height: H, indices: new Uint8Array(W * H), group };
+        const spriteInfo = new Uint16Array(W * H);
+        const indices = composeVdp({ width: W, height: H, planeA: null, planeB: null, overlayB: null, sprites: this.vdpSprites(), maxSpritesPerLine: VDP_SPRITES_PER_LINE, maxSpritePixelsPerLine: VDP_SPRITE_PIXELS_PER_LINE, spriteInfo });
+        for (let i = 0; i < spriteInfo.length; i++) {
+            const v = spriteInfo[i]!;
+            if ((v & SPRITE_INFO_PRESENT) !== 0)
+                group[i] = spriteGroupOf(v & SPRITE_INFO_TILE_MASK, (v & SPRITE_INFO_PRIORITY) !== 0, glowTiles, opts.sniperTiles);
+        }
+        const farWhole = composeVdp({ width: W, height: H, planeA: null, planeB: null, overlayB: null, sprites: this.vdpSprites(opts.noStrips === true), maxSpritesPerLine: VDP_SPRITES_PER_LINE, maxSpritePixelsPerLine: VDP_SPRITE_PIXELS_PER_LINE, skipSpritePixel: (prio, tile) => spriteGroupOf(tile, prio, glowTiles) !== SPRITE_GROUP.FAR });
+        return { width: W, height: H, indices, group, farWhole };
+    }
+    private vdpSprites(noStrips = false): VdpSprite[] {
         const { env, HC, HAND } = this.deps;
         const hudTiles = (i: number): Uint8Array | undefined => hudTile(this.shownHud(), i);
         const sprites: VdpSprite[] = [];
@@ -705,7 +796,7 @@ export class DemoRun {
                 sprites.push({ xWord, yWord, wCells: MASK_W, hCells: MASK_H, attr: HC.MASK.ATTR, tile: hudTiles });
         const shownHand = this.shownHandList();
         const win = shownHand.window;
-        const handTiles = (i: number): Uint8Array | undefined => (win === null ? undefined : win[i - HAND.FIRST_TILE]);
+        const handTiles = (i: number): Uint8Array | undefined => (i >= HAND.FIRST_TILE && i < HAND.FIRST_TILE + HAND.WINDOW_TILES ? (win === null ? undefined : win[i - HAND.FIRST_TILE]) : hudTiles(i));
         for (const s of shownHand.list)
             sprites.push({ xWord: s.xWord, yWord: s.yWord, wCells: s.w, hCells: s.h, attr: s.attr, tile: handTiles });
         const sniperBank = this.deps.hudAssets.sniperBankTiles;
@@ -725,8 +816,9 @@ export class DemoRun {
             const n = TILE_SIZE * TILE_SIZE / 2;
             return t < 0 || (t + 1) * n > bank.length ? undefined : bank.subarray(t * n, (t + 1) * n);
         };
-        for (const s of this.cityShown[this.liveSeat()])
-            sprites.push({ xWord: s.xWord, yWord: s.yWord, wCells: s.wCells, hCells: s.hCells, attr: s.tileWord, tile: bankTiles });
+        if (!noStrips)
+            for (const s of this.cityShown[this.liveSeat()])
+                sprites.push({ xWord: s.xWord, yWord: s.yWord, wCells: s.wCells, hCells: s.hCells, attr: s.tileWord, tile: bankTiles });
         return sprites;
     }
 }

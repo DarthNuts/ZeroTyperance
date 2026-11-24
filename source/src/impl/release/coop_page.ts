@@ -1,5 +1,5 @@
 import { RollbackPage, REASON_ROM, REASON_VERSION, roomCode } from "../net/rollback.js";
-import type { NetEvent, StartOptions } from "../net/rollback.js";
+import type { HostScreen, NetEvent, StartOptions } from "../net/rollback.js";
 import type { NetConstants } from "../net/constants.js";
 import type { Effect, NetCore, StepPace } from "../net/core.js";
 import type { Transport } from "../net/transport.js";
@@ -40,6 +40,7 @@ export interface PreScreen<T> {
     tick(pad: number, events: EventSink): void;
     readonly result: T | null;
     picture(): ScreenPicture;
+    where?(): Exclude<HostScreen, "starting">;
 }
 export interface CoopScreens {
     title(): PreScreen<CoopStartPoint>;
@@ -72,6 +73,7 @@ export interface CoopPageOptions {
     readonly onDraw?: (seat: 0 | 1, step: number) => void;
     readonly onConfirmed?: (step: number, saved: string) => void;
     readonly onEffect?: (key: string, e: Effect, step: number) => void;
+    readonly onAudio?: (step: number, list: readonly Effect[]) => void;
     readonly screens?: CoopScreens;
     readonly startWith?: () => {
         readonly settings: Settings;
@@ -85,14 +87,19 @@ export class CoopPage {
     status: CoopStatus = "connecting";
     reason = "";
     code = "";
+    coreMade: ((core: NetCore) => void) | null = null;
     constructor(private readonly o: CoopPageOptions) {
         this.page = new RollbackPage({
-            seat: o.seat, ...(o.scheme ? { scheme: o.scheme } : {}), ...(o.screens ? { selectCharacter: true } : {}), consts: o.consts, transport: o.transport, clock: o.clock, hello: o.hello, makeCore: o.makeCore,
+            seat: o.seat, ...(o.scheme ? { scheme: o.scheme } : {}), ...(o.screens ? { selectCharacter: true } : {}), consts: o.consts, transport: o.transport, clock: o.clock, hello: o.hello,
+            makeCore: (start) => { const c = o.makeCore(start); this.coreMade?.(c); return c; },
             onDraw: (step) => o.onDraw?.(o.seat, step),
             ...(o.onConfirmed ? { onConfirmed: o.onConfirmed } : {}),
             ...(o.onEffect ? { onEffect: o.onEffect } : {}),
+            ...(o.onAudio ? { onAudio: o.onAudio } : {}),
             onEvent: (e) => this.onEvent(e),
         });
+        if (o.seat === 0 && o.screens)
+            this.page.setScreen("title");
     }
     static newCode(c: NetConstants, rand: () => number): string { return roomCode(c, rand); }
     private onEvent(e: NetEvent): void {
@@ -130,6 +137,7 @@ export class CoopPage {
             this.shown = this.title;
             this.title.tick(pad, this.screenSink);
             const point = this.title.result;
+            this.page.setScreen(point !== null ? "starting" : this.title.where?.() ?? "title");
             if (point !== null) {
                 const w = this.o.startWith?.() ?? null;
                 if (w === null)
@@ -157,16 +165,31 @@ export class CoopPage {
                 p.chooseCharacter(this.select.result);
         }
     }
+    get hostScreen(): HostScreen | null { return this.page.peerScreen; }
     startSession(settings: Settings, choices: CoopChoices, seed: number): void {
         if (!this.canStart)
             throw new Error("Start: no guest has joined");
         this.page.host({ delay: sessionDelay(settings, this.o.consts), seed: seed >>> 0, options: sessionOptions(settings, choices) });
     }
-    tick(pad: number): void {
+    screensByFrame = false;
+    private screenPad(pad: number): number { return this.o.scheme?.scheme === "modern" ? originalByteOfPad(pad) : pad & 0xff; }
+    get preWorld(): boolean { return this.page.phase !== "running" && this.page.phase !== "ended"; }
+    screenPass(pad: number): boolean {
+        if (!this.preWorld)
+            return true;
+        const screen = this.shown;
+        const was = screen?.result ?? null;
+        this.screenEvents = [];
+        this.screensTick(this.screenPad(pad));
+        if (this.shown !== null)
+            this.o.onScreenEvents?.(this.screenEvents);
+        return (screen !== null && this.shown !== screen) || (this.shown !== null && this.shown.result !== was) || this.page.phase === "running";
+    }
+    tick(padIn: number | (() => number)): void {
         const before = this.page.phase === "running" || this.page.phase === "ended";
-        const screenPad = this.o.scheme?.scheme === "modern" ? originalByteOfPad(pad) : pad & 0xff;
+        const pad = before || typeof padIn === "number" ? padIn : this.screensByFrame ? 0 : padIn();
         try {
-            if (!before) {
+            if (!before && !this.screensByFrame && typeof pad === "number") {
                 let passes = 1;
                 const pace = this.o.screenPace?.(this.page.start);
                 if (pace) {
@@ -174,23 +197,16 @@ export class CoopPage {
                     passes = Math.floor(this.paceAcc / pace.den);
                     this.paceAcc -= passes * pace.den;
                 }
-                for (let i = 0; i < passes; i++) {
-                    const screen = this.shown;
-                    const was = screen?.result ?? null;
-                    this.screenEvents = [];
-                    this.screensTick(screenPad);
-                    if (this.shown !== null)
-                        this.o.onScreenEvents?.(this.screenEvents);
-                    if ((screen !== null && this.shown !== screen) || (this.shown !== null && this.shown.result !== was) || this.page.phase === "running")
+                for (let i = 0; i < passes; i++)
+                    if (this.screenPass(pad))
                         break;
-                }
             }
         }
         finally {
             this.afterScreens(before, pad);
         }
     }
-    private afterScreens(before: boolean, pad: number): void {
+    private afterScreens(before: boolean, pad: number | (() => number)): void {
         this.page.tick(before ? pad : 0);
         if (this.page.phase === "running")
             this.started = true;

@@ -82,6 +82,8 @@ export function floorDocFrom(doc: unknown, floor: number, side: number): FloorDo
     const classes: number[] = [];
     const blocks: number[] = [];
     const words: Record<number, readonly number[]> = {};
+    for (const [index, w] of wordsOf)
+        words[index] = Object.freeze(w);
     for (let y = 0; y < side; y++) {
         const row = f.grid[y] as unknown;
         if (!Array.isArray(row) || row.length !== side || !row.every(isInt))
@@ -92,7 +94,6 @@ export function floorDocFrom(doc: unknown, floor: number, side: number): FloorDo
                 throw new Error(`maps document: block ${block} of floor ${floor} is not in the blocks table`);
             classes.push(cls);
             blocks.push(block);
-            words[block] = Object.freeze(wordsOf.get(block)!);
         }
     }
     const mt = d.metatextures;

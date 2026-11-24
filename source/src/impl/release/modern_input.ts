@@ -69,6 +69,7 @@ export interface ModernConfig {
     turnCap: "original" | "fast";
     crouchToggle: boolean;
 }
+export const TEST_ONLY = { capPending: false };
 const PERCENT = 100;
 export class ModernInputState {
     private cfg: ModernConfig;
@@ -163,14 +164,32 @@ export class ModernInputState {
         return out;
     }
     private mouseTurn(v: number): number {
+        const plan = this.planMouseTurn(v);
+        this.history = plan.history;
+        this.counts = 0;
+        this.prevTurn = plan.t;
+        this.frac = plan.total - plan.given;
+        return plan.given === 0 ? 0 : plan.given;
+    }
+    pendingMouseTurn(v = 0): number {
+        const p = this.planMouseTurn(v);
+        const g = TEST_ONLY.capPending ? p.given : Math.trunc(p.total);
+        return g === 0 ? 0 : g;
+    }
+    get mouseTurnMax(): number { return this.caps.mouseTurnMax; }
+    private planMouseTurn(v: number): {
+        history: number[];
+        t: number;
+        total: number;
+        given: number;
+    } {
         const m = this.cfg.mouse;
         const n = Math.max(1, Math.floor(m.smoothing));
-        this.history.push(this.counts);
-        this.counts = 0;
-        while (this.history.length > n)
-            this.history.shift();
+        const history = [...this.history, this.counts];
+        while (history.length > n)
+            history.shift();
         let sum = 0;
-        for (const c of this.history)
+        for (const c of history)
             sum += c;
         const c = sum / n;
         const accelerated = c * (1 + (m.accel / PERCENT) * (Math.abs(c) / PERCENT));
@@ -180,14 +199,12 @@ export class ModernInputState {
             if (this.prevTurn !== 0 && Math.abs(t) < Math.abs(floor) && t * this.prevTurn >= 0)
                 t = floor;
         }
-        this.prevTurn = t;
         const total = t + this.frac;
         const whole = Math.trunc(total);
         const cap = this.cfg.turnCap === "original" ? this.caps.original : this.caps.fast;
         const lo = Math.max(-cap - v, -this.caps.mouseTurnMax);
         const hi = Math.min(cap - v, this.caps.mouseTurnMax);
         const given = Math.min(hi, Math.max(lo, whole));
-        this.frac = total - given;
-        return given === 0 ? 0 : given;
+        return { history, t, total, given };
     }
 }

@@ -3,7 +3,10 @@ import { ASSETS_VERSION, EXPECTED_MD5 } from "../ztassets/core.js";
 import type { OutputFile } from "../ztassets/core.js";
 import { APP_DATA_URL, appConstantsFrom } from "./constants.js";
 import type { AppConstants } from "./constants.js";
-import { ExtractionCancelled, checkRom, extractAndStore, firstStart, forget, otherVersionStored } from "./flow.js";
+import { ExtractionCancelled, checkRom, extractAndStore, firstStart, otherVersionStored } from "./flow.js";
+import { runStorageAction } from "./storage_actions.js";
+import type { StorageAction } from "./storage_actions.js";
+import { stateStorage } from "./states.js";
 import type { Extraction, Progress } from "./flow.js";
 import { AudioRelayHost } from "./audio_relay.js";
 import { progressText, progressValue } from "./runner.js";
@@ -15,6 +18,7 @@ import { PICK_OWN_NOTE, takeBundledRom } from "./bundled_rom.js";
 import { fetchDataPack } from "./bundles_page.js";
 import { DATA_PACK_FILE } from "./site_names.js";
 import { closePagePack, openPagePack } from "./page_pack.js";
+import { mountSlideshow } from "./slides.js";
 const WORKER_FILE = "dist/impl/release/worker.js";
 const AUDIO_WORKER_FILE = "dist/impl/release/audio_worker.js";
 const APP_MODULE = "./app.js";
@@ -84,6 +88,8 @@ interface AppModule {
         storage: Storage | undefined;
         onReextract(): void;
         onForget(): Promise<void>;
+        onResetSettings(): Promise<void>;
+        onClearAssets(): Promise<void>;
         guard: GameViewGuard;
     }): Promise<() => void>;
 }
@@ -125,10 +131,23 @@ async function main(): Promise<void> {
             await show("rom");
             $<HTMLInputElement>("file").click();
         } }); },
-        forget: async () => { await forget(store); closePagePack(); tablesStale = false; say(""); await show("rom"); },
+        forget: async () => { await storageAction("forget"); },
         rom: (bytes) => start(bytes),
         close: () => undefined,
     });
+    async function storageAction(a: StorageAction): Promise<void> {
+        await runStorageAction(a, { consts, settings: settingsStorage(), assets: store, states: stateStorage(consts) });
+        say("");
+        if (a === "reset") {
+            await show("menu");
+            return;
+        }
+        closePagePack();
+        tablesStale = false;
+        await show("rom");
+    }
+    const resetSettings = async (): Promise<void> => { guard.leave("leave"); await storageAction("reset"); };
+    const clearAssets = async (): Promise<void> => { guard.leave("forget"); await storageAction("clear"); };
     addEventListener("pagehide", () => actions.close());
     $("expected").textContent = `${consts.romSize} bytes, md5 ${EXPECTED_MD5}`;
     async function mountMenu(): Promise<void> {
@@ -169,6 +188,8 @@ async function main(): Promise<void> {
             consts, store, md5, version: ASSETS_VERSION, storage: settingsStorage(),
             onReextract: actions.reextract,
             onForget: actions.forget,
+            onResetSettings: resetSettings,
+            onClearAssets: clearAssets,
             guard,
         });
     }
@@ -191,7 +212,8 @@ async function main(): Promise<void> {
             $<HTMLProgressElement>("bar").value = progressValue(p) + creep;
         };
         const timer = setInterval(paint, 500);
-        return { report: (p) => { last = p; lastAt = Date.now(); paint(); }, stop: () => clearInterval(timer) };
+        const slides = mountSlideshow($("slides"), consts.slides);
+        return { report: (p) => { last = p; lastAt = Date.now(); paint(); }, stop: () => { clearInterval(timer); slides.stop(); } };
     }
     let bundledDeclined = false;
     async function offerBundled(): Promise<boolean> {

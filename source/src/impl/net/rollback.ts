@@ -1,6 +1,6 @@
 import type { NetConstants } from "./constants.js";
 import type { Effect, NetCore } from "./core.js";
-import { digestOf } from "./core.js";
+import { digestOf, runningStep, setRunningStep } from "./core.js";
 import type { Transport } from "./transport.js";
 import { ORIGINAL_SCHEME, schemeOf } from "./scheme.js";
 import type { SeatScheme } from "./scheme.js";
@@ -35,6 +35,7 @@ type Msg = {
     character?: number;
 } | {
     t: "wait";
+    screen?: HostScreen;
 } | {
     t: "input";
     first: number;
@@ -52,9 +53,17 @@ type Msg = {
     step: number;
     state: string;
 } | {
+    t: "echo";
+    n: number;
+} | {
+    t: "echoBack";
+    n: number;
+} | {
     t: "bye";
     reason: string;
 };
+export type HostScreen = "title" | "options" | "password" | "starting";
+export const HOST_SCREENS: readonly HostScreen[] = ["title", "options", "password", "starting"];
 export type NetEvent = {
     readonly type: "Net.Session";
     readonly state: "connecting" | "started" | "waiting" | "ended";
@@ -81,15 +90,46 @@ export interface PageOptions {
     readonly scheme?: SeatScheme;
     readonly selectCharacter?: boolean;
     readonly onEffect?: (key: string, e: Effect, step: number) => void;
+    readonly onAudio?: (step: number, list: readonly Effect[]) => void;
     readonly onDraw?: (step: number) => void;
     readonly onEvent?: (e: NetEvent) => void;
     readonly onConfirmed?: (step: number, saved: string) => void;
+    readonly echo?: boolean;
 }
 export type Phase = "hello" | "starting" | "running" | "ended";
 export const REASON_VERSION = "another version of the app";
 export const REASON_ROM = "another ROM image";
 export const REASON_PARTNER_ERROR = "the partner's page stopped on an error";
 export const REASON_OWN_ERROR = "the session ended on an error of this page";
+export function playedKeyId(e: Effect): string | number {
+    if (e.kind !== "sound" || typeof e.id !== "string" || !e.id.includes('"place"'))
+        return e.id;
+    try {
+        const o = JSON.parse(e.id) as Record<string, unknown>;
+        delete o["place"];
+        return JSON.stringify(o);
+    }
+    catch {
+        return e.id;
+    }
+}
+export function isEffectOrVoice(e: Effect): boolean {
+    if (e.kind !== "sound")
+        return false;
+    if (typeof e.id === "string" && e.id.startsWith("{")) {
+        try {
+            const type = (JSON.parse(e.id) as {
+                type?: unknown;
+            }).type;
+            return type === "Audio.PlaySfx" || type === "Audio.PlayVoice" || type === "Audio.Request";
+        }
+        catch {
+            return true;
+        }
+    }
+    return e.source !== "music";
+}
+export { runningStep } from "./core.js";
 export class RollbackPage {
     readonly seat: 0 | 1;
     phase: Phase = "hello";
@@ -108,10 +148,56 @@ export class RollbackPage {
     readonly local = new Map<number, number>();
     readonly remote = new Map<number, number>();
     readonly used = new Map<number, number>();
-    readonly ring = new Map<number, string>();
+    readonly ring = new Map<number, unknown>();
+    private readonly runDigest = new Map<number, string>();
+    private readonly runText = new Map<number, string>();
     delay = 0;
     acked = -1;
     private readonly played = new Map<number, Set<string>>();
+    private readonly audio = new Map<number, readonly Effect[]>();
+    private handed = -1;
+    private startAudio: readonly Effect[] = [];
+    droppedStaleAudio = 0;
+    private readonly lags: number[] = [];
+    linkLag(): number {
+        return this.lags.length === 0 ? 0 : Math.min(...this.lags);
+    }
+    lateLimit(): number {
+        return this.o.consts.lateEffectMax + this.linkLag();
+    }
+    private echoN = 0;
+    private readonly echoSent = new Map<number, number>();
+    private readonly trips: number[] = [];
+    private nextEchoAt: number | null = null;
+    roundTrips(): readonly number[] { return this.trips; }
+    liveSteps = 0;
+    readonly work = { saveMs: 0, restoreMs: 0, stepsMs: 0, digestMs: 0, digests: 0, saves: 0, restores: 0, predictedRuns: 0 };
+    private readonly timer: () => number = typeof performance !== "undefined" ? () => performance.now() : () => Date.now();
+    private saveState(): unknown {
+        const t0 = this.timer();
+        const s = this.core!.snap ? this.core!.snap() : this.core!.save();
+        this.work.saveMs += this.timer() - t0;
+        this.work.saves++;
+        return s;
+    }
+    private loadState(state: unknown): void {
+        const t0 = this.timer();
+        if (typeof state === "string")
+            this.core!.load(state);
+        else
+            this.core!.restore!(state);
+        this.work.restoreMs += this.timer() - t0;
+        this.work.restores++;
+    }
+    private textOf(s: unknown): string { return typeof s === "string" ? s : this.core!.snapText!(s); }
+    private keepBefore(t: number): void {
+        if (this.remote.has(t)) {
+            this.ring.delete(t);
+            return;
+        }
+        this.work.predictedRuns++;
+        this.ring.set(t, this.saveState());
+    }
     rollbacks = 0;
     rerunSteps = 0;
     skips = 0;
@@ -147,11 +233,33 @@ export class RollbackPage {
     private goAt: number | null = null;
     private helloOk = false;
     private lastWaitAt: number | null = null;
+    private ownScreen: HostScreen | null = null;
+    peerScreen: HostScreen | null = null;
     constructor(private readonly o: PageOptions) {
         this.seat = o.seat;
         this.lastHeard = o.clock();
         this.dack = -o.consts.digestEvery;
         this.emit({ type: "Net.Session", state: "connecting" });
+        o.transport.onArrival = () => { try {
+            this.between();
+        }
+        catch { } };
+    }
+    private held: string[] = [];
+    between(): void {
+        if (this.phase === "ended")
+            return;
+        const now = this.o.clock();
+        for (const text of this.o.transport.receive()) {
+            const m = JSON.parse(text) as Msg;
+            if (m.t === "echo" || m.t === "echoBack") {
+                this.handle(m);
+            }
+            else
+                this.held.push(text);
+        }
+        if (this.phase === "running")
+            this.sendEcho(now);
     }
     host(start: StartOptions): void {
         if (this.seat !== 0)
@@ -190,7 +298,9 @@ export class RollbackPage {
     }
     private emit(e: NetEvent): void { this.o.onEvent?.(e); }
     private send(channel: "reliable" | "unreliable", m: Msg): void { this.o.transport.send(channel, JSON.stringify(m)); }
-    tick(pad: number): void {
+    lastStoredAt: number | null = null;
+    tick(pad: number | (() => number)): void {
+        this.lastStoredAt = null;
         const now = this.o.clock();
         if (this.lastTickAt !== null && now - this.lastTickAt > this.o.consts.timeoutMs / 2)
             this.lastHeard = now;
@@ -200,21 +310,22 @@ export class RollbackPage {
             const h = this.o.hello;
             this.send("reliable", { t: "hello", protocol: h.protocol ?? this.o.consts.protocol, version: h.version, md5: h.md5 });
         }
-        for (const text of this.o.transport.receive()) {
-            this.lastHeard = now;
+        const arrived = this.held.length > 0 ? [...this.held.splice(0), ...this.o.transport.receive()] : this.o.transport.receive();
+        for (const text of arrived) {
+            const m = JSON.parse(text) as Msg;
+            if (m.t !== "echo" && m.t !== "echoBack")
+                this.lastHeard = now;
             if (this.phase === "ended")
                 continue;
-            this.handle(JSON.parse(text) as Msg);
+            this.handle(m);
         }
-        if (this.helloOk && (this.phase === "hello" || this.phase === "starting") && (this.lastWaitAt === null || now - this.lastWaitAt >= this.o.consts.waitEveryMs)) {
-            this.lastWaitAt = now;
-            this.send("reliable", { t: "wait" });
-        }
+        if (this.helloOk && (this.phase === "hello" || this.phase === "starting") && (this.lastWaitAt === null || now - this.lastWaitAt >= this.o.consts.waitEveryMs))
+            this.sendWait(now);
         if (this.phase !== "ended" && now - this.lastHeard > this.o.consts.timeoutMs)
             this.end("no message from the partner", false);
         if (this.phase === "ended") {
             if (this.offlineFrom !== null)
-                this.runOffline(pad);
+                this.runOffline(padTaken(pad));
             return;
         }
         if (this.seat === 0 && this.phase === "starting" && this.readyFromGuest && this.chosen && this.pingAt === null) {
@@ -231,7 +342,19 @@ export class RollbackPage {
             this.begin();
         if (this.phase !== "running")
             return;
+        this.sendEcho(now);
         this.wallStep(pad, now);
+    }
+    private sendWait(now: number): void {
+        this.lastWaitAt = now;
+        this.send("reliable", this.seat === 0 && this.ownScreen !== null ? { t: "wait", screen: this.ownScreen } : { t: "wait" });
+    }
+    setScreen(screen: HostScreen): void {
+        if (this.seat !== 0 || screen === this.ownScreen)
+            return;
+        this.ownScreen = screen;
+        if (this.helloOk && (this.phase === "hello" || this.phase === "starting"))
+            this.sendWait(this.o.clock());
     }
     private handle(m: Msg): void {
         switch (m.t) {
@@ -281,7 +404,10 @@ export class RollbackPage {
                     this.begin();
                 }
                 return;
-            case "wait": return;
+            case "wait":
+                if (this.seat === 1 && typeof m.screen === "string" && (HOST_SCREENS as readonly string[]).includes(m.screen))
+                    this.peerScreen = m.screen;
+                return;
             case "input":
                 this.takeInput(m);
                 return;
@@ -289,6 +415,19 @@ export class RollbackPage {
                 if (this.seat === 1 && this.phase === "running")
                     this.repair(m.step, m.state);
                 return;
+            case "echo":
+                this.send("unreliable", { t: "echoBack", n: m.n });
+                return;
+            case "echoBack": {
+                const at = this.echoSent.get(m.n);
+                if (at === undefined)
+                    return;
+                this.echoSent.delete(m.n);
+                this.trips.push(this.o.clock() - at);
+                while (this.trips.length > this.o.consts.echoWindow)
+                    this.trips.shift();
+                return;
+            }
             case "bye":
                 this.end(m.reason || "the partner left", false);
                 return;
@@ -297,11 +436,24 @@ export class RollbackPage {
     private prepare(start: StartOptions): void {
         this.core = this.o.makeCore(start);
         this.core.setSchemes?.(this.schemes);
+        this.startAudio = this.core.startAudio?.() ?? [];
     }
     private takeDelay(start: StartOptions): void {
         this.delay = start.delay;
         for (let t = 0; t < this.delay; t++)
             this.local.set(t, 0);
+    }
+    private sendEcho(now: number): void {
+        if (this.o.echo === false)
+            return;
+        if (this.nextEchoAt === null)
+            this.nextEchoAt = now;
+        if (now < this.nextEchoAt)
+            return;
+        const n = this.echoN++;
+        this.echoSent.set(n, now);
+        this.send("unreliable", { t: "echo", n });
+        this.nextEchoAt = now + this.o.consts.echoEveryMs;
     }
     private begin(): void {
         this.phase = "running";
@@ -371,18 +523,46 @@ export class RollbackPage {
     private runStep(t: number, live: boolean, newest: number = this.n - 1): void {
         const [p0, p1] = this.pads(t);
         this.used.set(t, this.seat === 0 ? p1 : p0);
-        const effects = this.core!.step(p0, p1);
+        const was = runningStep();
+        setRunningStep(t);
+        let effects: readonly Effect[];
+        const t0 = this.timer();
+        try {
+            effects = this.core!.step(p0, p1);
+        }
+        finally {
+            setRunningStep(was);
+            this.work.stepsMs += this.timer() - t0;
+        }
+        if (live)
+            this.liveSteps++;
+        if (t % this.o.consts.digestEvery === 0 && this.offlineFrom === null) {
+            const d0 = this.timer();
+            this.runDigest.set(t, this.core!.digest ? this.core!.digest() : digestOf(this.core!.save()));
+            this.work.digestMs += this.timer() - d0;
+            this.work.digests++;
+            if (this.o.onConfirmed)
+                this.runText.set(t, this.core!.save());
+        }
+        else if (this.o.onConfirmed)
+            this.runText.set(t, this.core!.save());
         let keys = this.played.get(t);
         if (!keys) {
             keys = new Set();
             this.played.set(t, keys);
         }
         const age = newest - t;
+        const limit = this.lateLimit();
+        const audioOn = this.o.onAudio !== undefined;
+        if (audioOn)
+            this.audio.set(t, effects.filter((e) => e.kind === "sound"));
         effects.forEach((e, order) => {
-            const key = `${t}|${e.kind}|${e.id}|${e.source}|${order}`;
+            if (audioOn && e.kind === "sound")
+                return;
+            const key = `${t}|${e.kind}|${playedKeyId(e)}|${e.source}|${order}`;
             if (keys!.has(key))
                 return;
-            if (!live && age > this.o.consts.lateEffectMax) {
+            if (!live && age > limit) {
                 this.droppedLateEffects++;
                 return;
             }
@@ -395,12 +575,12 @@ export class RollbackPage {
     private rerun(from: number, to: number): void {
         for (let t = from; t < to; t++) {
             if (t > from)
-                this.ring.set(t, this.core!.save());
+                this.keepBefore(t);
             this.runStep(t, false);
             this.rerunSteps++;
         }
     }
-    private wallStep(pad: number, now: number): void {
+    private wallStep(pad: number | (() => number), now: number): void {
         const c = this.o.consts;
         if (this.rollbackPoint !== null) {
             const r = this.rollbackPoint;
@@ -408,7 +588,7 @@ export class RollbackPage {
             const saved = this.ring.get(r);
             if (saved === undefined)
                 throw new Error(`rollback to ${r}: no state in the ring (confirmed ${this.confirmed}, n ${this.n})`);
-            this.core!.load(saved);
+            this.loadState(saved);
             this.rerun(r, this.n);
             this.rollbacks++;
             this.lastRollbackAt = this.n;
@@ -436,9 +616,11 @@ export class RollbackPage {
                 this.emit({ type: "Net.Session", state: "started" });
             this.stallSince = null;
             this.waitingShown = false;
-            if (!this.local.has(this.n + this.delay))
-                this.local.set(this.n + this.delay, pad);
-            this.ring.set(this.n, this.core!.save());
+            if (!this.local.has(this.n + this.delay)) {
+                this.local.set(this.n + this.delay, padTaken(pad));
+                this.lastStoredAt = this.n + this.delay;
+            }
+            this.keepBefore(this.n);
             this.runStep(this.n, true);
             this.n++;
         }
@@ -470,16 +652,34 @@ export class RollbackPage {
             const needDigest = t % c.digestEvery === 0 && this.offlineFrom === null;
             if (!needDigest && !this.o.onConfirmed)
                 continue;
-            const after = t + 1 < this.n ? this.ring.get(t + 1)! : this.core!.save();
-            this.o.onConfirmed?.(t, after);
+            if (this.o.onConfirmed)
+                this.o.onConfirmed(t, this.runText.get(t) ?? this.core!.save());
             if (needDigest)
-                this.myDigests.set(t, digestOf(after));
+                this.myDigests.set(t, this.runDigest.get(t) ?? (this.core!.digest ? this.core!.digest() : digestOf(this.core!.save())));
         }
         if (s > this.confirmed) {
+            const limit = this.lateLimit();
+            if (this.o.onAudio)
+                for (let t = Math.max(this.confirmed, this.handed) + 1; t <= s; t++)
+                    this.handOver(t, limit);
+            for (let t = this.confirmed + 1; t <= s; t++) {
+                this.lags.push(this.n - 1 - t);
+                if (this.lags.length > c.lagWindow)
+                    this.lags.shift();
+            }
             this.confirmed = s;
+            for (const k of [...this.audio.keys()])
+                if (k <= s)
+                    this.audio.delete(k);
             for (const k of [...this.ring.keys()])
                 if (k <= s)
                     this.ring.delete(k);
+            for (const k of [...this.runDigest.keys()])
+                if (k <= s)
+                    this.runDigest.delete(k);
+            for (const k of [...this.runText.keys()])
+                if (k <= s)
+                    this.runText.delete(k);
             for (const k of [...this.played.keys()])
                 if (k < s - c.maxPrediction)
                     this.played.delete(k);
@@ -491,6 +691,18 @@ export class RollbackPage {
                     this.used.delete(k);
             this.checkDigests();
         }
+    }
+    private handOver(t: number, limit: number): void {
+        this.handed = t;
+        let list: readonly Effect[] = this.audio.get(t) ?? [];
+        if (t === 0 && this.startAudio.length > 0)
+            list = [...this.startAudio, ...list];
+        if (this.n - 1 - t > limit) {
+            const kept = list.filter((e) => !isEffectOrVoice(e));
+            this.droppedStaleAudio += list.length - kept.length;
+            list = kept;
+        }
+        this.o.onAudio!(t, list);
     }
     private checkDigests(): void {
         for (const [s, d] of this.myDigests) {
@@ -508,7 +720,7 @@ export class RollbackPage {
             this.emit({ type: "Net.Desync", step: s });
             if (this.seat === 0) {
                 const at = this.confirmed + 1;
-                const state = at < this.n ? this.ring.get(at)! : this.core!.save();
+                const state = at < this.n && this.ring.has(at) ? this.textOf(this.ring.get(at)) : this.core!.save();
                 this.send("reliable", { t: "state", step: at, state });
             }
         }
@@ -516,7 +728,7 @@ export class RollbackPage {
     private repair(s: number, state: string): void {
         const was = this.n;
         const newest = was - 1;
-        this.core!.load(state);
+        this.loadState(state);
         this.ring.clear();
         this.ring.set(s, state);
         this.confirmed = s - 1;
@@ -532,7 +744,7 @@ export class RollbackPage {
                 this.compared.delete(k);
         for (let t = s; t < was && this.local.has(t); t++) {
             if (t > s)
-                this.ring.set(t, this.core!.save());
+                this.keepBefore(t);
             this.runStep(t, false, newest);
             this.n = t + 1;
         }
@@ -567,7 +779,7 @@ export class RollbackPage {
         if (wasRunning && this.core) {
             const at = this.confirmed + 1;
             if (at < this.n) {
-                this.core.load(this.ring.get(at)!);
+                this.loadState(this.ring.get(at)!);
                 this.n = at;
             }
             this.ring.clear();
@@ -587,13 +799,16 @@ export class RollbackPage {
         this.emit({ type: "Net.Session", state: "ended", reason: this.reason });
     }
     private runOffline(pad: number): void {
-        if (!this.local.has(this.n + this.delay))
+        if (!this.local.has(this.n + this.delay)) {
             this.local.set(this.n + this.delay, pad);
+            this.lastStoredAt = this.n + this.delay;
+        }
         this.runStep(this.n, true);
         this.n++;
         this.advanceConfirmed();
     }
 }
+function padTaken(pad: number | (() => number)): number { return typeof pad === "function" ? pad() : pad; }
 export function roomCode(c: NetConstants, rand: () => number): string {
     let s = "";
     for (let i = 0; i < c.roomCodeLen; i++)

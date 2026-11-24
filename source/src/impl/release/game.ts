@@ -2,15 +2,17 @@
 import { cheatRulesOf } from "./cheats_page.js";
 import { PageBundles } from "./bundles_page.js";
 import { pagePack } from "./page_pack.js";
-import { fitScale } from "./settings.js";
+import { drawnRenderer, fitScale, hdDrawSettings } from "./settings.js";
+import { hasWebgl2 } from "./webgl2_check.js";
+import { paceStepMs, stepLengthMs } from "../rend/hd/blend.js";
 import type { Settings } from "./settings.js";
-import { SpeedScheduler } from "./scheduler.js";
+import { BLANKS_PER_SECOND, SpeedScheduler } from "./scheduler.js";
 import type { AppConstants } from "./constants.js";
 import type { AssetStore } from "./store.js";
 import type { AppHost } from "../boot/app/host.js";
 import type { ModernDescriptor } from "../modern/seat.js";
 import type { NetCore } from "../net/core.js";
-import type { CoopStartPoint } from "../boot/app/host.js";
+import type { CoopStartPoint, HostMoment } from "../boot/app/host.js";
 import type { CoopScreens } from "./coop_page.js";
 import type { SeatRules } from "../tick/seats.js";
 export type BundleSource = (path: string) => Promise<string | undefined>;
@@ -23,6 +25,8 @@ export interface GameOptions {
     getSettings: () => Settings;
     pad: () => number;
     modern?: () => ModernDescriptor | null;
+    modernTurn?: (newestSessionStep: number | null, onePlayerPlays: boolean) => number | null;
+    webgl2?: boolean;
     bundleSource?: BundleSource;
     loadCore?: () => Promise<unknown>;
     stallWarnMs?: number;
@@ -126,15 +130,40 @@ export class GameHost {
     ], rules?: SeatRules): NetCore | null {
         return this.host.api?.coopCore(point, seed, offsetX, characters, rules) ?? null;
     }
+    coopHd(core: unknown, seat: 0 | 1, screen: {
+        readonly cram: readonly number[];
+        readonly indices?: Uint8Array;
+    }): void { this.host.api?.coopHd?.(core, seat, screen); }
+    coopHdHide(): void { this.host.api?.coopHdHide?.(); }
     coopSounds(json: readonly string[]): void { this.host.api?.coopSounds(json); }
+    coopGameBlanks(n: number): void { (this.host.api?.engine as {
+        gameBlanks?(n: number): void;
+    } | undefined)?.gameBlanks?.(n); }
+    coopAudio(session: {
+        readonly seat: 0 | 1;
+        readonly voices: number;
+    } | null): void { this.host.api?.coopAudio(session); }
     coopScreens(prefill: () => string | null): CoopScreens | null { return this.host.api?.coopScreens(prefill) ?? null; }
     coopScreenEvents(events: readonly unknown[]): void { this.host.api?.coopScreenEvents(events); }
     keptPassword: string | null = null;
+    private webgl2Known: boolean | null = null;
+    private hasWebgl2(): boolean {
+        this.webgl2Known ??= this.o.webgl2 ?? hasWebgl2(() => document.createElement("canvas"));
+        return this.webgl2Known;
+    }
     get statusText(): string { return this.lastText; }
-    private async startCore(o: GameOptions, skipIntro = o.getSettings().game.skip_intro): Promise<void> {
+    private async startCore(o: GameOptions, skipIntro = o.getSettings().game.intro === "skip"): Promise<void> {
         this.host.pad = () => o.pad();
         this.host.modern = () => o.modern?.() ?? null;
+        this.host.intro = () => o.getSettings().game.intro;
         this.host.cheats = () => cheatRulesOf(o.getSettings());
+        this.host.hd = () => { const s = o.getSettings(); return { renderer: drawnRenderer(s, this.hasWebgl2()), ...hdDrawSettings(s) }; };
+        this.host.modernTurn = (k, plays) => o.modernTurn?.(k, plays) ?? null;
+        this.host.stepMs = (paced: boolean) => {
+            const sch = paced ? this.scheduler : null;
+            return stepLengthMs({ mode: sch ? "custom" : "original", originalBlanks: o.consts.speed.originalBlanks, customSteps: sch ? sch.customSteps : 1, blanksPerSecond: BLANKS_PER_SECOND });
+        };
+        this.host.paceMs = (pace) => paceStepMs(pace, BLANKS_PER_SECOND);
         (globalThis as {
             __ztHost?: AppHost;
         }).__ztHost = this.host;
@@ -167,7 +196,7 @@ export class GameHost {
             this.showStatus("", false);
         }
         const api = await this.waitForApi();
-        const ok = api ? api.powerOnWithPassword(code, this.o.getSettings().game.skip_intro) : false;
+        const ok = api ? api.powerOnWithPassword(code, this.o.getSettings().game.intro === "skip") : false;
         if (ok)
             this.keptPassword = code;
         return ok;
@@ -178,6 +207,9 @@ export class GameHost {
         readonly floor: number;
     } | null {
         return this.started ? this.host.api?.passwordNow() ?? null : null;
+    }
+    momentNow(): HostMoment | null {
+        return this.started ? this.host.api?.momentNow?.() ?? null : null;
     }
     private async waitForApi(): Promise<AppHost["api"]> {
         while (!this.host.api) {
@@ -276,6 +308,9 @@ export class GameHost {
             this.host.pace = null;
         }
         this.host.api?.engine.setLevel(s.audio.mute ? 0 : s.audio.volume / 100);
+        (this.host.api?.engine as {
+            setVoiceLimit?(m: string, x: number): void;
+        } | undefined)?.setVoiceLimit?.(s.audio.voice_mode, s.audio.voice_interval);
         this.layout();
     }
     layout(): void {

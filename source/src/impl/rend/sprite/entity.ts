@@ -3,7 +3,7 @@ import type { SoldierConstants, SpriteConstants } from "./constants.js";
 import { drawFrame } from "./frame.js";
 import { drawItemRecord } from "./items.js";
 import { entityRow, projectEntity } from "./project.js";
-import { beamShadingOf, shadingOf } from "./raster.js";
+import { RASTER_TRACE, beamShadingOf, setSpriteObserver, shadingOf } from "./raster.js";
 import { soldierDraw } from "./soldier.js";
 import type { DrawChoice } from "./soldier.js";
 import { guardDraw } from "./guard.js";
@@ -15,9 +15,9 @@ import { FLAME_GROUND_DRAW_VECTOR, GIB_DRAW_VECTOR, drawFlameStream, drawGroundF
 import { BOSS_KIND, SHOT_DRAW_VECTOR, bossDraw, drawShot } from "./boss.js";
 import { CAMERA_DRAW_VECTOR, CAMERA_POP_DRAW_VECTOR, drawCamera, drawCameraPop } from "./camera.js";
 import { MINE_BLAST_DRAW_VECTOR, MINE_PLACED_DRAW_VECTOR, drawBlast, drawMine } from "./mine.js";
-import { GRENADE_DRAW_VECTOR, drawGrenade, kindDraw } from "./kind_poses.js";
+import { GRENADE_DRAW_VECTOR, SERGEANT_KIND, SF_KIND, drawGrenade, kindDraw } from "./kind_poses.js";
 import { drawImpact, drawParticle } from "./particle.js";
-import type { BankState, EntityRecord, PassInputs } from "./types.js";
+import type { BankState, EntityRecord, PassInputs, SpriteObserver } from "./types.js";
 interface Kept {
     readonly rec: EntityRecord;
     readonly S: number;
@@ -295,6 +295,29 @@ function drawEntity(k: Kept, inputs: PassInputs): void {
     drawFrame(surface, bank, frame, S, k.column, sy, shading.table, shading.mirrored, SC, note, beamShadingOf(surface, assets, SC, note));
 }
 export function spritePass(inputs: PassInputs): void {
+    const observer = inputs.ctx.observer ?? null;
+    if (observer !== null && RASTER_TRACE.on)
+        RASTER_TRACE.items = inputs.items.slice();
+    setSpriteObserver(observer);
+    try {
+        runPass(inputs, observer);
+    }
+    finally {
+        setSpriteObserver(null);
+    }
+}
+function lootOf(rec: EntityRecord, ES: SoldierConstants): 0 | 1 | 2 | 3 {
+    if (rec.form !== "corpse")
+        return 0;
+    if (rec.kind === GUARD_KIND)
+        return rec.state === GUARD.CORPSE_STATE ? 2 : 0;
+    if (rec.state !== ES.CORPSE_STATE)
+        return 0;
+    if (rec.kind === SOLDIER_KIND)
+        return 1;
+    return rec.kind === SF_KIND || rec.kind === SERGEANT_KIND ? 3 : 0;
+}
+function runPass(inputs: PassInputs, observer: SpriteObserver | null): void {
     const heap = new EntityHeap<Kept>();
     for (const k of keptEntities(inputs))
         heap.insert(k.S, k);
@@ -305,7 +328,12 @@ export function spritePass(inputs: PassInputs): void {
         if (i < 0 && nextKey === undefined)
             break;
         if (nextKey !== undefined && (i < 0 || nextKey < s16(items[i].S))) {
-            drawEntity(heap.extract()!, inputs);
+            const k = heap.extract()!;
+            if (observer !== null)
+                observer.entity({ slot: k.rec.slot, x: k.rec.pos.x, y: k.rec.pos.y, z: k.rec.z, S: k.S, sx: k.column, sy: entityRow(k.S, k.rec.z, inputs.eye, inputs.ctx.SC), loot: lootOf(k.rec, inputs.ctx.ES), corpse: k.rec.form === "corpse" });
+            drawEntity(k, inputs);
+            if (observer !== null)
+                observer.end();
         }
         else {
             drawItemRecord(items[i], inputs);

@@ -26,6 +26,7 @@ import { encodePassword } from "../../password/codec.js";
 import { EPISODE_BY_INDEX, LEVEL_BYTE_EPISODE_SHIFT as EPISODE_SHIFT, ROUND } from "../../start/constants.js";
 import type { AttractKit, DemoPace } from "./tick_kit.js";
 import { hex8 } from "./tick_kit.js";
+import { timedPart } from "../../rend/hd/step_parts.js";
 export const NEW_GAME_EPISODE = 0;
 export const NEW_GAME_CURSOR = 0;
 export const NEW_GAME_ALIVE: readonly number[] = [1, 1, 1, 1, 1];
@@ -53,7 +54,20 @@ type EpisodeEnd = {
     eventsFrom: number;
     frame: number;
     readonly ending?: true;
+    both?: BothSeatsEnd;
 };
+interface BothSeatsEnd {
+    pressed: [
+        boolean,
+        boolean
+    ];
+    prev: [
+        number,
+        number
+    ];
+    page: number;
+}
+export const COOP_MAP_END = { on: true };
 interface EpisodeCarry {
     readonly items: ReadonlyArray<{
         readonly item: number;
@@ -249,7 +263,7 @@ export class NewGameSession {
                 const out0Before = seats?.out[0] === true;
                 const out1Before = seats?.out[1] === true;
                 try {
-                    const op = run.stepOpen(pad & PAD_BYTE_MASK, { floorEntries: this.floorEntries, carriedEntry: this.carriedEntry });
+                    const op = timedPart("iterationMs", () => run.stepOpen(pad & PAD_BYTE_MASK, { floorEntries: this.floorEntries, carriedEntry: this.carriedEntry }));
                     if (op.kind === "paused") {
                         coopEvent(run.state, { type: "Coop.Pause", seat: 0, on: true });
                         if (seats !== undefined)
@@ -339,15 +353,19 @@ export class NewGameSession {
                 if (next >= EPISODE_BY_INDEX.length) {
                     const screen = new BriefingCore(env.briefing.assets, env.briefing.C);
                     screen.enterEnding();
-                    this.end = { kind: "briefing", screen, eventsFrom: st.events.length, frame: 0, ending: true };
+                    const both = this.bothSeatsOpen(screen, pad);
+                    if (both !== null)
+                        this.bothSeatsPad(both, screen, pad);
+                    this.end = { kind: "briefing", screen, eventsFrom: st.events.length, frame: 0, ending: true, ...(both !== null ? { both } : {}) };
                     log.push("-- the last episode ended: the ending (ZT-UI-BRIEFING 4.11, case 4: briefing_g, scenes.07) starts --");
                     return { changed: true, sounds: [], log };
                 }
                 const screen = new BriefingCore(env.briefing.assets, env.briefing.C);
                 const C = env.briefing.C;
                 const cells = C.PLANE_W * C.PLANE_H;
-                screen.enter({ planeA: new Uint16Array(cells), planeB: new Uint16Array(cells), patterns: new Uint8Array(SLOT_COUNT * PATTERN_BYTES), pad }, next === 1 ? "episode1" : "episode2");
-                this.end = { kind: "briefing", screen, eventsFrom: st.events.length, frame: 0 };
+                const both = this.bothSeatsOpen(screen, pad);
+                screen.enter({ planeA: new Uint16Array(cells), planeB: new Uint16Array(cells), patterns: new Uint8Array(SLOT_COUNT * PATTERN_BYTES), pad: both === null ? pad : this.bothSeatsPad(both, screen, pad) }, next === 1 ? "episode1" : "episode2");
+                this.end = { kind: "briefing", screen, eventsFrom: st.events.length, frame: 0, ...(both !== null ? { both } : {}) };
                 log.push(`-- the entry briefing of episode ${next} (ZT-UI-BRIEFING 4.9, case ${next}) starts --`);
                 return { changed: true, sounds: [], log };
             }
@@ -363,7 +381,7 @@ export class NewGameSession {
                         st.events.push(x as unknown as SoundEvent);
                 },
             };
-            e.screen.tick(pad, sink);
+            e.screen.tick(e.both !== undefined ? this.bothSeatsPad(e.both, e.screen, pad) : pad, sink);
             e.frame++;
             const sounds = st.events.slice(e.eventsFrom);
             e.eventsFrom = st.events.length;
@@ -384,6 +402,47 @@ export class NewGameSession {
             log.push(`-- the episode's end refused: ${this.lastError} --`);
             return { changed: false, sounds: [], log };
         }
+    }
+    private bothSeatsOpen(screen: BriefingCore, pad0: number): BothSeatsEnd | null {
+        const seats = this.run?.state.seats;
+        if (!COOP_MAP_END.on || seats === undefined)
+            return null;
+        return { pressed: [false, false], prev: [pad0 & PAD_BYTE_MASK, seats.pad1 & PAD_BYTE_MASK], page: screen.page };
+    }
+    private bothSeatsPad(b: BothSeatsEnd, screen: BriefingCore, pad0: number): number {
+        const seats = this.run!.state.seats!;
+        const pads: [
+            number,
+            number
+        ] = [pad0 & PAD_BYTE_MASK, seats.pad1 & PAD_BYTE_MASK];
+        const bit = screen.endBit;
+        if (screen.page !== b.page) {
+            b.page = screen.page;
+            b.pressed = [false, false];
+        }
+        let or = 0;
+        for (const k of [0, 1] as const) {
+            if (seats.out[k] === true) {
+                b.pressed[k] = true;
+                continue;
+            }
+            if ((pads[k] & bit) !== 0 && (b.prev[k] & bit) === 0)
+                b.pressed[k] = true;
+            b.prev[k] = pads[k];
+            or |= pads[k];
+        }
+        return (or & ~bit) | (b.pressed[0] && b.pressed[1] ? bit : 0);
+    }
+    seatWaiting(seat: 0 | 1): boolean {
+        if (this.stage !== "episode_end")
+            return false;
+        const e = this.end;
+        if (e === null || e.kind !== "briefing" || e.both === undefined)
+            return false;
+        const b = e.both;
+        if (e.screen.page !== b.page)
+            return false;
+        return b.pressed[seat] && !b.pressed[seat === 0 ? 1 : 0] && this.run?.state.seats?.out[seat] !== true;
     }
     private nextEpisodeStart(pad: number, blankCounter: number, log: string[]): void {
         const st = this.run!.state;
@@ -590,6 +649,8 @@ export class NewGameSession {
     }
     seatPicture(seat: 0 | 1): IndexedPicture | null {
         if (this.stage === "pause" && seat === 0)
+            return this.picture();
+        if (COOP_MAP_END.on && this.run !== null && (this.stage === "episode_end" || this.stage === "level_start"))
             return this.picture();
         if (this.stage === "death_select" && (this.death?.seat ?? 0) === seat)
             return this.picture();

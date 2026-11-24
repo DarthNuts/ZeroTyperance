@@ -19,6 +19,8 @@ export interface TickBundle {
         readonly sprite: unknown;
         readonly soldier: unknown;
         readonly sky: unknown;
+        readonly hd?: unknown;
+        readonly view?: unknown;
         readonly hit: unknown;
         readonly pickup: unknown;
         readonly items: unknown;

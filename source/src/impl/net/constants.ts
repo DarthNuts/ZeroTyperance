@@ -24,6 +24,10 @@ export interface NetConstants {
     readonly syncWindow: number;
     readonly syncSkipEvery: number;
     readonly lateEffectMax: number;
+    readonly lagWindow: number;
+    readonly echoEveryMs: number;
+    readonly echoWindow: number;
+    readonly echoLateMs: number;
     readonly timeoutMs: number;
     readonly waitEveryMs: number;
     readonly connectTimeoutMs: number;
@@ -38,6 +42,7 @@ export interface NetConstants {
     readonly roomListMs: number;
     readonly serverReachMs: number;
     readonly roomListMax: number;
+    readonly roomNameMax: number;
     readonly gateSeeds: number;
     readonly gateSteps: number;
     readonly healSteps: number;
@@ -80,7 +85,12 @@ export function netConstantsFrom(doc: Doc): NetConstants {
         roomListMs: get("NET.ROOM_LIST_MS"),
         serverReachMs: get("NET.SERVER_REACH_MS"),
         roomListMax: get("NET.ROOM_LIST_MAX"),
+        roomNameMax: get("NET.ROOM_NAME_MAX"),
         lateEffectMax: get("NET.LATE_EFFECT_MAX"),
+        lagWindow: get("NET.LAG_WINDOW"),
+        echoEveryMs: get("NET.ECHO_EVERY_MS"),
+        echoWindow: get("NET.ECHO_WINDOW"),
+        echoLateMs: get("NET.ECHO_LATE_MS"),
         timeoutMs: get("NET.TIMEOUT_MS"),
         waitEveryMs: get("NET.WAIT_EVERY_MS"),
         connectTimeoutMs: get("NET.CONNECT_TIMEOUT_MS"),

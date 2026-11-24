@@ -163,6 +163,9 @@ export class BriefingCore {
     get padRead(): number {
         return this.prevPad;
     }
+    get endBit(): number {
+        return this.startBit;
+    }
     get page(): number {
         return this.k > this.C.BLANK_OFFSET ? this.pageIndex + 1 : 0;
     }

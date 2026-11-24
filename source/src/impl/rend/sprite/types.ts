@@ -59,6 +59,30 @@ export interface SpriteAssets {
     shadeTable(name: string, mirrored: boolean): Uint8Array | null;
     shadeArray(name: string): readonly string[] | null;
     arrayOfMode(mode: number): string | null;
+    artId?(art: Art): ArtRef | null;
+}
+export interface ArtRef {
+    readonly bank: string | null;
+    readonly slot: number;
+}
+export interface SpriteObserver {
+    entity(e: {
+        readonly slot: number;
+        readonly x: number;
+        readonly y: number;
+        readonly z: number;
+        readonly S: number;
+        readonly sx: number;
+        readonly sy: number;
+        readonly loot?: 0 | 1 | 2 | 3;
+        readonly corpse?: boolean;
+    }): void;
+    part(art: Art, mirrored: boolean, rect: SpriteRect): void;
+    end(): void;
+    corpseFrame(cell: readonly [
+        number,
+        number
+    ], frame: number): void;
 }
 export interface Surface {
     readonly columns: number;
@@ -186,6 +210,7 @@ export interface SpriteContext {
         readonly x: number;
         readonly y: number;
     };
+    observer?: SpriteObserver;
 }
 export interface PassInputs {
     readonly ctx: SpriteContext;

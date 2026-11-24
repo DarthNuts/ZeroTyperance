@@ -4,16 +4,24 @@ export interface Effect {
     readonly id: string | number;
     readonly source: string | number;
 }
+let RUNNING_STEP: number | null = null;
+export function runningStep(): number | null { return RUNNING_STEP; }
+export function setRunningStep(t: number | null): void { RUNNING_STEP = t; }
 export interface NetCore {
     step(pad0: number, pad1: number): readonly Effect[];
     save(): string;
     load(state: string): void;
+    snap?(): unknown;
+    restore?(s: unknown): void;
+    snapText?(s: unknown): string;
+    digest?(): string;
     setSchemes?(schemes: readonly [
         SeatScheme,
         SeatScheme
     ]): void;
     seatLost?(seat: 0 | 1): void;
     setPace?(pace: StepPace): void;
+    startAudio?(): readonly Effect[];
 }
 export interface StepPace {
     readonly num: number;

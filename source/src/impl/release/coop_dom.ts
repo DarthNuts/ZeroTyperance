@@ -9,30 +9,40 @@ import type { NetConstants } from "../net/constants.js";
 import type { NetCore, StepPace } from "../net/core.js";
 import type { SeatScheme } from "../net/scheme.js";
 import { roomCode } from "../net/rollback.js";
-import type { StartOptions } from "../net/rollback.js";
+import type { HostScreen, StartOptions } from "../net/rollback.js";
 import { broadcastTransport } from "../net/transport.js";
 import type { Transport } from "../net/transport.js";
-import { HTTPS_WS_TEXT, RoomLister, ServerClient, ServerRefusal, Unreachable, blockedByHttps, normalizeServer, serverInUse } from "../net/server_client.js";
+import { DEFAULT_ROOM_NAME, HTTPS_WS_TEXT, RoomLister, ServerClient, ServerRefusal, Unreachable, askInfo, blockedByHttps, normalizeServer, serverInUse } from "../net/server_client.js";
 import type { RoomInfo, WsLike } from "../net/server_client.js";
 import { openSessionTransport } from "../net/webrtc_transport.js";
 import { iceServers } from "../net/stun_config.js";
+import { PASSWORD_LENGTH, normalizeEntry } from "./passwords.js";
+import type { ExtraCode, PasswordTarget } from "./passwords.js";
+import type { PasswordRow } from "./quickstart.js";
 export interface Item {
     label: string;
     value: string;
     group?: string;
+    cells?: {
+        id: "saved" | "default";
+        text: string;
+    }[];
 }
 export const CHARACTER_NAMES: readonly string[] = Object.freeze(["Ishii", "Haile", "Wolf", "Ramos", "Gjoerup"]);
 export type Closable = Transport & {
     close(): void;
 };
 export interface Connector {
-    host(): Promise<{
+    host(name?: string): Promise<{
         code: string;
+        id?: string;
+        name?: string;
         urls?: readonly string[];
         peer: Promise<Closable>;
         cancel(): void;
     }>;
-    join(code: string): Promise<Closable>;
+    join(code: string, room?: string): Promise<Closable>;
+    info?(): Promise<string | null>;
     rooms?(): Promise<readonly RoomInfo[] | null>;
     closeRooms?(): void;
     readonly server?: string;
@@ -61,7 +71,7 @@ type LobbyMsg = {
 export function localConnector(c: NetConstants, rand: () => number, timers: Timers = REAL_TIMERS, BC: typeof BroadcastChannel = BroadcastChannel): Connector {
     const lobbyName = (code: string): string => `zt-lobby-${code}`;
     return {
-        host: async () => {
+        host: async (name) => {
             const code = roomCode(c, rand);
             const lobby = new BC(lobbyName(code));
             let guest: string | null = null;
@@ -83,7 +93,7 @@ export function localConnector(c: NetConstants, rand: () => number, timers: Time
                 }
                 lobby.postMessage({ t: "welcome", id: m.id } satisfies LobbyMsg);
             };
-            return { code, peer, cancel: () => { lobby.close(); } };
+            return { code, name: name ?? DEFAULT_ROOM_NAME, peer, cancel: () => { lobby.close(); } };
         },
         join: (codeText) => new Promise<Closable>((resolve, reject) => {
             const code = codeText.trim().toUpperCase();
@@ -149,7 +159,7 @@ export function onlineConnector(url: string, settings: Settings, c: NetConstants
     let lister: RoomLister | null = null;
     return {
         server: url,
-        host: async () => {
+        host: async (name) => {
             let arrived!: () => void;
             const peerHere = new Promise<void>((r) => { arrived = r; });
             let onPeer: (() => void) | undefined;
@@ -157,19 +167,35 @@ export function onlineConnector(url: string, settings: Settings, c: NetConstants
             const client = new ServerClient({ consts: c, socket: ws, openSocket: () => new Socket(url), onPeer: () => { onPeer?.(); } });
             onPeer = arrived;
             await reach(client, ws);
-            const { code } = await client.host();
-            const peer = peerHere.then(() => openSessionTransport(client, 0, ice, { consts: c })).then((s) => s.transport);
-            return { code, urls: [...client.urls], peer, cancel: () => client.leave() };
+            const { code } = await client.host(name);
+            const peer = peerHere.then(() => openSessionTransport(client, 0, ice, { consts: c })).then((s) => Object.assign(s.transport, { path: s.kind }));
+            return { code, id: client.roomId ?? "", name: client.roomName ?? name, urls: [...client.urls], peer, cancel: () => client.leave() };
         },
-        join: async (code) => {
+        join: async (code, room) => {
             const ws = new Socket(url);
             const client = new ServerClient({ consts: c, socket: ws, openSocket: () => new Socket(url) });
             await reach(client, ws);
-            await client.join(code.trim());
+            await client.join(code.trim(), room);
             const s = await openSessionTransport(client, 1, ice, { consts: c });
-            return s.transport;
+            return Object.assign(s.transport, { path: s.kind });
         },
-        rooms: () => { lister ??= new RoomLister(url, (u) => new Socket(u)); return lister.ask(); },
+        rooms: () => { lister ??= new RoomLister(url, (u) => new Socket(u), c.serverProtocol); return lister.ask(); },
+        info: () => new Promise<string | null>((resolve, reject) => {
+            let h: unknown = null;
+            let done = false;
+            let sock: WsLike | null = null;
+            if (limit)
+                h = limit.timers.setTimeout(() => { h = null; if (done)
+                    return; done = true; try {
+                    sock?.close();
+                }
+                catch { } reject(new Unreachable(url)); }, limit.ms);
+            askInfo(url, (u) => (sock = new Socket(u))).then((v) => { if (done)
+                return; done = true; if (h !== null)
+                limit!.timers.clearTimeout(h); resolve(v); }, (e: unknown) => { if (done)
+                return; done = true; if (h !== null)
+                limit!.timers.clearTimeout(h); reject(e as Error); });
+        }),
         closeRooms: () => { lister?.close(); lister = null; },
     };
 }
@@ -179,14 +205,32 @@ export function failureWords(err: unknown): string {
     return err instanceof Error ? err.message : String(err);
 }
 export function roomRow(r: RoomInfo): Item {
-    return { label: r.code, value: `${r.where !== "" ? `on ${r.where}, ` : ""}waiting ${r.age_s} s` };
+    return { label: r.name, value: `${r.where !== "" ? `on ${r.where}, ` : ""}waiting ${r.age_s} s` };
 }
 export function hostUrlsLine(urls: readonly string[]): string { return `or your partner opens ${urls.join("  ")}`; }
+export const CODE_ENTRY_TEXT = "Type the room code the host tells you";
 export const NO_ROOM_TEXT = "no open game on this network";
 export function normalizeCode(text: string): string {
     return text.toUpperCase().replace(/[\s-]+/g, "");
 }
+export interface PasswordChoiceDeps {
+    rows(): readonly PasswordRow[] | null;
+    extras(): readonly ExtraCode[];
+    saved(): readonly string[];
+    check(code: string): PasswordTarget | null;
+    levelName(t: {
+        readonly episode: number;
+        readonly floor: number;
+    }): string;
+    store?(code: string, t: PasswordTarget): boolean;
+    load?(): Promise<void>;
+}
+export interface HostStart {
+    readonly code: string;
+    readonly name: string;
+}
 export interface CoopPageDeps {
+    readonly passwordChoice?: PasswordChoiceDeps;
     readonly net: NetConstants;
     readonly app: AppConstants;
     readonly getSettings: () => Settings;
@@ -205,18 +249,36 @@ export interface CoopPageDeps {
     readonly scheme?: () => SeatScheme;
     readonly screens: CoopScreens;
     readonly onScreenEvents?: (events: readonly unknown[]) => void;
+    readonly sessionAudio?: (seat: 0 | 1 | null) => void;
     readonly characterNames: readonly string[];
     readonly live: Omit<CoopLiveOptions, "makePage" | "consts" | "speed" | "onEnd" | "onLine" | "onStatus" | "onStarted">;
     readonly requestRender: () => void;
     readonly onSessionStart: (live: CoopLive) => void;
     readonly onSessionEnd?: (reason: string, lost: boolean) => void;
     readonly onGameOver?: () => void;
+    readonly onSessionDropped?: () => void;
     readonly onLine?: (line: string) => void;
     readonly onConfirmed?: (seat: 0 | 1, step: number, saved: string) => void;
     readonly rand: () => number;
     readonly seed: () => number;
 }
 export type Phase = "idle" | "connecting" | "open" | "session" | "over";
+export function hostScreenLine(screen: HostScreen | null): string {
+    switch (screen) {
+        case null: return "Connecting to the host";
+        case "title": return "The host is in the title menu";
+        case "options": return "The host is in the options";
+        case "password": return "The host is entering a password";
+        case "starting": return "The host is starting the game";
+    }
+}
+export const SPINNER_TURN_MS = 1000;
+export interface WaitingScreen {
+    readonly heading: string;
+    readonly line: string;
+    readonly angle: number;
+    readonly row: string;
+}
 export interface CoopPageController {
     items(): Item[];
     adjust(index: number, delta: -1 | 1, chosen: boolean): void;
@@ -230,9 +292,19 @@ export interface CoopPageController {
     readonly joinPage: boolean;
     rooms(): readonly RoomInfo[] | null;
     back(): boolean;
+    setRoomName(text: string): void;
+    readonly roomName: string;
+    readonly hostStart: HostStart | null;
+    setFreeEntry(text: string | null): void;
+    playFreeEntry(): boolean;
+    pickCell(index: number, id: "saved" | "default"): void;
+    readonly view: "main" | "name" | "join" | "entry" | "password";
+    readonly shownName: string;
+    readonly roomId: string;
     readonly hostUrls: string;
     readonly code: string;
     status(): string;
+    waitingScreen(nowMs: number): WaitingScreen | null;
     live(): CoopLive | null;
     leave(): void;
     quit(): void;
@@ -266,7 +338,45 @@ interface ListSource {
 export function createCoopPage(deps: CoopPageDeps): CoopPageController {
     let role: "host" | "join" | null = null;
     let phase: Phase = "idle";
-    let view: "main" | "join" = "main";
+    let view: "main" | "name" | "join" | "entry" | "password" = "main";
+    let hostStart: HostStart | null = null;
+    let pwCell: ("saved" | "default")[] = [];
+    let freeEntry: string | null = null;
+    const pc = deps.passwordChoice;
+    function chooseStart(code: string | null): boolean {
+        if (code === null)
+            hostStart = null;
+        else {
+            const t = pc?.check(code) ?? null;
+            if (t === null)
+                return false;
+            hostStart = { code, name: pc!.levelName(t) };
+        }
+        view = "name";
+        freeEntry = null;
+        note = "";
+        deps.requestRender();
+        return true;
+    }
+    function openChooser(): void {
+        view = "password";
+        pwCell = [];
+        freeEntry = null;
+        note = "";
+        if (pc?.rows() === null && pc.load)
+            void pc.load().then(() => deps.requestRender(), () => deps.requestRender());
+        deps.requestRender();
+    }
+    let roomName = DEFAULT_ROOM_NAME;
+    let nameTyped = false;
+    let infoToken = 0;
+    let shownName = "";
+    let roomId = "";
+    let entry: {
+        readonly id: string;
+        readonly name: string;
+        readonly url: string | undefined;
+    } | null = null;
     let rooms: readonly RoomInfo[] | null = null;
     let roomServer = new Map<string, string>();
     let unlisted = false;
@@ -330,6 +440,7 @@ export function createCoopPage(deps: CoopPageDeps): CoopPageController {
         transportH = transport;
         closeJoinPage();
         let shownTold = false;
+        deps.sessionAudio?.(seat);
         const tellShown = (): void => {
             if (!shownTold && liveH && phase === "open") {
                 shownTold = true;
@@ -342,12 +453,15 @@ export function createCoopPage(deps: CoopPageDeps): CoopPageController {
             ...deps.live,
             drawScreen: (pic) => { tellShown(); deps.live.drawScreen?.(pic); },
             consts: deps.app,
+            path: () => (transport as {
+                path?: "direct" | "relay";
+            }).path ?? "direct",
             speed: { mode: s.speed.mode, custom_steps: s.speed.custom_steps },
             characterName: name,
             makePage: (hooks) => {
                 const cp = new CoopPage({
                     consts: deps.net, hello: deps.hello, clock: hooks.clock, transport, seat, makeCore: (start) => pacedCore(deps.app, deps.makeCore(start), start), ...(deps.scheme ? { scheme: deps.scheme() } : {}),
-                    onDraw: hooks.onDraw, onEffect: hooks.onEffect,
+                    onDraw: hooks.onDraw, onEffect: hooks.onEffect, onAudio: hooks.onAudio,
                     screens: deps.screens,
                     screenPace: (start) => speedPace(deps.app, start ? start.options["speed"] : deps.getSettings().speed),
                     startWith: () => ({ settings: deps.getSettings(), seed: deps.seed() }),
@@ -372,7 +486,7 @@ export function createCoopPage(deps: CoopPageDeps): CoopPageController {
         note = "";
         deps.requestRender();
     }
-    async function open(as: "host" | "join", only?: string): Promise<void> {
+    async function open(as: "host" | "join", only?: string, listedId?: string): Promise<void> {
         if (phase !== "idle")
             return;
         if (as === "join" && code === "") {
@@ -387,6 +501,8 @@ export function createCoopPage(deps: CoopPageDeps): CoopPageController {
             return;
         }
         const mine = ++token;
+        roomId = "";
+        shownName = as === "join" && entry !== null && listedId === entry.id ? entry.name : "";
         role = as;
         phase = "connecting";
         note = "connecting";
@@ -401,7 +517,7 @@ export function createCoopPage(deps: CoopPageDeps): CoopPageController {
                 if (as === "host") {
                     let h: Awaited<ReturnType<Connector["host"]>>;
                     try {
-                        h = await conn.host();
+                        h = await conn.host(roomName);
                     }
                     catch (err) {
                         if (mine !== token)
@@ -418,6 +534,8 @@ export function createCoopPage(deps: CoopPageDeps): CoopPageController {
                     }
                     via = conn.server ?? "";
                     code = h.code;
+                    shownName = h.name ?? roomName;
+                    roomId = h.id ?? "";
                     hostUrls = h.urls ?? [];
                     note = "waiting for the partner";
                     cancelRoom = h.cancel;
@@ -432,7 +550,7 @@ export function createCoopPage(deps: CoopPageDeps): CoopPageController {
                 }
                 let tp: Closable;
                 try {
-                    tp = await conn.join(code);
+                    tp = await conn.join(code, listedId);
                 }
                 catch (err) {
                     if (mine !== token)
@@ -476,7 +594,7 @@ export function createCoopPage(deps: CoopPageDeps): CoopPageController {
                 continue;
             any = true;
             for (const r of s.rooms) {
-                const k = normalizeCode(r.code);
+                const k = r.id;
                 if (seen.has(k))
                     continue;
                 seen.set(k, s.url);
@@ -497,7 +615,7 @@ export function createCoopPage(deps: CoopPageDeps): CoopPageController {
     }
     function poll(): void {
         listTimer = null;
-        if (view !== "join")
+        if (view !== "join" && view !== "entry")
             return;
         const mine = listToken;
         if (phase === "idle") {
@@ -545,6 +663,30 @@ export function createCoopPage(deps: CoopPageDeps): CoopPageController {
         }
         listTimer = timers.setTimeout(poll, deps.net.roomListMs);
     }
+    function openNamePage(): void {
+        view = "name";
+        hostStart = null;
+        roomName = DEFAULT_ROOM_NAME;
+        nameTyped = false;
+        note = "";
+        const mine = ++infoToken;
+        const urls = servers().filter((u) => !blockedByHttps(pageLoc(), u));
+        deps.requestRender();
+        const ask = (i: number): void => {
+            if (i >= urls.length || mine !== infoToken)
+                return;
+            const conn = connectorFor(urls[i]!);
+            if (!conn.info)
+                return;
+            conn.info().then((computer) => {
+                if (mine !== infoToken || view !== "name" || nameTyped || phase !== "idle")
+                    return;
+                roomName = computer !== null && computer !== "" ? computer : DEFAULT_ROOM_NAME;
+                deps.requestRender();
+            }, () => { ask(i + 1); });
+        };
+        ask(0);
+    }
     function openJoinPage(): void {
         closeJoinPage();
         view = "join";
@@ -571,6 +713,7 @@ export function createCoopPage(deps: CoopPageDeps): CoopPageController {
             s.conn.closeRooms?.();
         sources = [];
         view = "main";
+        entry = null;
     }
     function keepServer(text: string): void {
         deps.saveServer?.(normalizeServer(text, deps.net));
@@ -589,6 +732,7 @@ export function createCoopPage(deps: CoopPageDeps): CoopPageController {
             else {
                 liveH.stop();
                 liveH = null;
+                deps.sessionAudio?.(null);
             }
         }
         if (phase !== "session") {
@@ -607,6 +751,7 @@ export function createCoopPage(deps: CoopPageDeps): CoopPageController {
             liveH.leave();
             liveH.stop();
             liveH = null;
+            deps.sessionAudio?.(null);
         }
         transportH?.close();
         transportH = null;
@@ -615,6 +760,7 @@ export function createCoopPage(deps: CoopPageDeps): CoopPageController {
         note = "";
     }
     const idle = (): boolean => phase === "idle";
+    const inGame = (): boolean => phase === "session" || (phase === "over" && liveH !== null && liveH.coop.page.core !== null);
     let serverText: string | null = null;
     const busyLabel = (): string => (phase === "session" || phase === "over" ? "Leave" : "Cancel");
     return {
@@ -623,9 +769,19 @@ export function createCoopPage(deps: CoopPageDeps): CoopPageController {
         get code() { return code; },
         get hostUrls() { return hostUrls.length > 0 ? hostUrlsLine(hostUrls) : ""; },
         status,
+        waitingScreen(nowMs: number): WaitingScreen | null {
+            if (role !== "join" || (phase !== "connecting" && phase !== "open"))
+                return null;
+            const cp = coop();
+            const turn = ((nowMs % SPINNER_TURN_MS) + SPINNER_TURN_MS) % SPINNER_TURN_MS;
+            return { heading: "Waiting for the host", line: hostScreenLine(cp ? cp.hostScreen : null), angle: (turn * 360) / SPINNER_TURN_MS, row: busyLabel() };
+        },
         setCode(text: string): void { if (idle())
             code = normalizeCode(text); },
-        joinCode: () => { void open("join"); },
+        joinCode: () => { if (view === "entry" && entry !== null)
+            void open("join", entry.url, entry.id);
+        else
+            void open("join"); },
         setServer: (text) => { if (idle()) {
             serverText = null;
             keepServer(text);
@@ -634,19 +790,73 @@ export function createCoopPage(deps: CoopPageDeps): CoopPageController {
         get joinPage() { return view === "join"; },
         rooms: () => rooms,
         back(): boolean {
-            if (!idle() || view !== "join")
+            if (!idle() || view === "main")
                 return false;
-            closeJoinPage();
+            if (view === "password") {
+                view = "name";
+                freeEntry = null;
+            }
+            else if (view === "name") {
+                view = "main";
+                infoToken++;
+            }
+            else if (view === "entry") {
+                view = "join";
+                entry = null;
+                code = "";
+            }
+            else
+                closeJoinPage();
             note = "";
             deps.requestRender();
             return true;
         },
+        setRoomName(text: string): void { if (idle() && view === "name") {
+            roomName = text;
+            nameTyped = true;
+        } },
+        get roomName() { return roomName; },
+        get hostStart() { return hostStart; },
+        setFreeEntry(text: string | null): void { if (view === "password") {
+            freeEntry = text === null ? null : normalizeEntry(text);
+            deps.requestRender();
+        } },
+        playFreeEntry(): boolean { return view === "password" && freeEntry !== null && chooseStart(freeEntry); },
+        pickCell(index: number, id: "saved" | "default"): void { if (view === "password" && index >= 1) {
+            pwCell[index - 1] = id;
+            deps.requestRender();
+        } },
+        get view() { return view; },
+        get shownName() { return shownName; },
+        get roomId() { return roomId; },
         live: () => liveH,
         leave,
         quit,
         items(): Item[] {
-            if (!idle() && role !== null)
-                return [{ label: busyLabel(), value: code === "" ? "(opening the room)" : `room ${code}` }];
+            if (!idle() && role !== null) {
+                const room = { label: busyLabel(), value: shownName !== "" ? `room ${shownName}` : code === "" ? "(opening the room)" : `room ${code}` };
+                return inGame() ? [room, { label: "Host a game", value: "ends this game" }, { label: "Join a game", value: "ends this game" }] : [room];
+            }
+            if (view === "name")
+                return [{ label: "Room name", value: roomName }, { label: "Password", value: hostStart === null ? "New game" : `${hostStart.code}  ${hostStart.name}` }, { label: "Open room", value: "" }];
+            if (view === "password") {
+                const rows = pc?.rows() ?? null;
+                const slots = pc?.saved() ?? [];
+                const out: Item[] = [{ label: "New game", value: "" }];
+                if (rows === null)
+                    return [...out, { label: "Loading the list...", value: "" }];
+                rows.forEach((r, i) => {
+                    const saved = `Saved ${slots[i] || "-"}`, def = `Default ${r.code}`;
+                    const sv = (pwCell[i] ?? "default") === "saved";
+                    out.push({ label: r.name, value: sv ? `[${saved}]  ${def}` : `${saved}  [${def}]`, group: `Episode ${r.episode + 1}`, cells: [{ id: "saved" as const, text: sv ? `[${saved}]` : saved }, { id: "default" as const, text: sv ? def : `[${def}]` }] } as Item);
+                });
+                for (const x of pc!.extras())
+                    out.push({ label: `${x.code} (${pc!.levelName(x)})`, value: x.code, group: "Extra codes" } as Item);
+                out.push({ label: "Free entry...", value: freeEntry ?? "" });
+                return out;
+            }
+            if (view === "entry")
+                return [{ label: "Room code", value: code || "(type the room code)" }];
             if (view === "join") {
                 const rows: Item[] = rooms === null ? [] : rooms.length === 0 ? [{ label: NO_ROOM_TEXT, value: "" }] : rooms.map(roomRow);
                 rows.push({ label: "Room code", value: code || "(type the room code)" });
@@ -664,20 +874,75 @@ export function createCoopPage(deps: CoopPageDeps): CoopPageController {
             if (!idle()) {
                 if (index === 0)
                     leave();
+                else if (inGame() && (index === 1 || index === 2)) {
+                    quit();
+                    deps.onSessionDropped?.();
+                    deps.requestRender();
+                    if (index === 1)
+                        openNamePage();
+                    else
+                        openJoinPage();
+                }
+                return;
+            }
+            if (view === "name") {
+                if (index === 0 || index === 2)
+                    void open("host");
+                else if (index === 1 && pc !== undefined)
+                    openChooser();
+                return;
+            }
+            if (view === "password") {
+                if (index === 0) {
+                    if (chosen)
+                        chooseStart(null);
+                    return;
+                }
+                const rows = pc?.rows() ?? null;
+                if (rows === null)
+                    return;
+                const i = index - 1;
+                if (i < rows.length) {
+                    if (!chosen) {
+                        pwCell[i] = (pwCell[i] ?? "default") === "saved" ? "default" : "saved";
+                        deps.requestRender();
+                        return;
+                    }
+                    const code = (pwCell[i] ?? "default") === "saved" ? pc!.saved()[i] ?? "" : rows[i]!.code;
+                    if (code !== "")
+                        chooseStart(code);
+                }
+                else if (i < rows.length + pc!.extras().length) {
+                    if (chosen)
+                        chooseStart(pc!.extras()[i - rows.length]!.code);
+                }
+                else if (chosen) {
+                    freeEntry = freeEntry === null ? "" : null;
+                    deps.requestRender();
+                }
+                return;
+            }
+            if (view === "entry") {
+                if (index === 0 && entry !== null)
+                    void open("join", entry.url, entry.id);
                 return;
             }
             if (view === "join") {
                 const listed = rooms ?? [];
                 if (index < listed.length) {
-                    code = normalizeCode(listed[index]!.code);
-                    void open("join", roomServer.get(code));
+                    const r = listed[index]!;
+                    entry = { id: r.id, name: r.name, url: roomServer.get(r.id) };
+                    view = "entry";
+                    code = "";
+                    note = "";
+                    deps.requestRender();
                 }
                 else if (index === (rooms === null ? 0 : Math.max(1, listed.length)))
                     void open("join");
                 return;
             }
             if (index === HOST_ROW)
-                void open("host");
+                openNamePage();
             else if (index === JOIN_ROW)
                 openJoinPage();
             else if (index === SERVER_ROW) {
@@ -688,6 +953,12 @@ export function createCoopPage(deps: CoopPageDeps): CoopPageController {
         },
         renderExtra(panel: HTMLElement): void {
             if (role === "host" && code !== "" && (phase === "connecting" || phase === "open")) {
+                if (shownName !== "") {
+                    const nm = document.createElement("div");
+                    nm.style.cssText = "font:bold 22px sans-serif;margin:12px 0 0";
+                    nm.textContent = shownName;
+                    panel.appendChild(nm);
+                }
                 const big = document.createElement("div");
                 big.style.cssText = "font:bold 48px monospace;letter-spacing:.2em;margin:12px 0 4px";
                 big.textContent = code;
@@ -717,6 +988,87 @@ export function createCoopPage(deps: CoopPageDeps): CoopPageController {
                     keepServer(input.value);
                 } });
                 panel.appendChild(input);
+            }
+            if (idle() && view === "name") {
+                const input = document.createElement("input");
+                input.type = "text";
+                input.value = roomName;
+                input.maxLength = deps.net.roomNameMax;
+                input.size = deps.net.roomNameMax + 2;
+                input.placeholder = "room name";
+                input.spellcheck = false;
+                input.autocomplete = "off";
+                input.addEventListener("input", () => { roomName = input.value; nameTyped = true; });
+                input.addEventListener("keydown", (ev) => { if (ev.key === "Escape")
+                    return; ev.stopPropagation(); if (ev.key === "Enter") {
+                    roomName = input.value;
+                    void open("host");
+                } });
+                panel.appendChild(input);
+                setTimeout(() => { input.focus(); if (!nameTyped)
+                    input.select(); }, 0);
+            }
+            if (idle() && view === "password" && freeEntry !== null && pc !== undefined) {
+                const input = document.createElement("input");
+                input.type = "text";
+                input.maxLength = PASSWORD_LENGTH;
+                input.value = freeEntry;
+                input.size = 14;
+                input.spellcheck = false;
+                input.autocomplete = "off";
+                const verdict = document.createElement("div");
+                verdict.className = "zt-note";
+                const play = document.createElement("button");
+                play.textContent = "Play";
+                const saveBtn = document.createElement("button");
+                saveBtn.textContent = "Save";
+                const judge = (): PasswordTarget | null => {
+                    const t = pc.check(freeEntry ?? "");
+                    verdict.textContent = t ? `Accepted: ${pc.levelName(t)}` : "The game refuses this password.";
+                    play.disabled = saveBtn.disabled = t === null;
+                    return t;
+                };
+                input.addEventListener("input", () => { const n = normalizeEntry(input.value); if (n !== input.value)
+                    input.value = n; freeEntry = n; judge(); });
+                input.addEventListener("keydown", (ev) => { if (ev.key === "Escape")
+                    return; ev.stopPropagation(); if (ev.key === "Enter" && judge())
+                    chooseStart(freeEntry ?? ""); });
+                play.addEventListener("click", () => { if (judge())
+                    chooseStart(freeEntry ?? ""); });
+                saveBtn.addEventListener("click", () => {
+                    const t = judge();
+                    if (t && pc.store) {
+                        note = pc.store(freeEntry ?? "", t) ? `Saved for ${pc.levelName(t)}.` : "No level row for this password.";
+                        deps.requestRender();
+                    }
+                });
+                panel.append(input, play, saveBtn, verdict);
+                judge();
+                setTimeout(() => input.focus(), 0);
+            }
+            if (idle() && view === "entry" && entry !== null) {
+                const nm = document.createElement("div");
+                nm.style.cssText = "font:bold 22px sans-serif;margin:12px 0 0";
+                nm.textContent = entry.name;
+                const line = document.createElement("div");
+                line.className = "zt-note";
+                line.textContent = CODE_ENTRY_TEXT;
+                const input = document.createElement("input");
+                input.type = "text";
+                input.value = code;
+                input.size = deps.net.roomCodeLen + 4;
+                input.placeholder = "room code";
+                input.spellcheck = false;
+                input.autocomplete = "off";
+                const target = entry;
+                input.addEventListener("input", () => { code = normalizeCode(input.value); });
+                input.addEventListener("keydown", (ev) => { if (ev.key === "Escape")
+                    return; ev.stopPropagation(); if (ev.key === "Enter") {
+                    code = normalizeCode(input.value);
+                    void open("join", target.url, target.id);
+                } });
+                panel.append(nm, line, input);
+                setTimeout(() => input.focus(), 0);
             }
             if (idle() && view === "join") {
                 const input = document.createElement("input");

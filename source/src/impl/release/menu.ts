@@ -1,9 +1,10 @@
-export type PageId = "root" | "password" | "coop" | "states" | "input" | "video" | "sound" | "cheats" | "about";
+export type PageId = "root" | "gameplay" | "password" | "coop" | "states" | "input" | "video" | "sound" | "cheats" | "about";
 export type MenuKey = "up" | "down" | "left" | "right" | "choose" | "back";
 export interface RowDef {
     readonly page: Exclude<PageId, "root">;
     readonly label: string;
 }
+export const GAMEPLAY_ROW: RowDef = { page: "gameplay", label: "Gameplay" };
 export const ROWS: readonly RowDef[] = [
     { page: "password", label: "Password" },
     { page: "coop", label: "Co-op" },
@@ -49,7 +50,7 @@ export class MenuModel {
         this.gameRunning = gameRunning;
     }
     private rootEntries(): ("play" | "save_password" | RowDef)[] {
-        return ["play", ...(this.levelRunning ? ["save_password" as const] : []), ...ROWS];
+        return ["play", GAMEPLAY_ROW, ...(this.levelRunning ? ["save_password" as const] : []), ...ROWS];
     }
     get page(): PageId { return this.pageId; }
     get cursor(): number { return this.rootCursor; }

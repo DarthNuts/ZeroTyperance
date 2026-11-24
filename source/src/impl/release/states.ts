@@ -15,11 +15,13 @@ export interface StateRecord {
 export interface StateStorage {
     get(slot: number): Promise<StateRecord | undefined>;
     put(slot: number, rec: StateRecord): Promise<void>;
+    clear(): Promise<void>;
 }
 export class MemoryStateStorage implements StateStorage {
     private readonly m = new Map<number, StateRecord>();
     async get(slot: number): Promise<StateRecord | undefined> { return this.m.get(slot); }
     async put(slot: number, rec: StateRecord): Promise<void> { this.m.set(slot, rec); }
+    async clear(): Promise<void> { this.m.clear(); }
 }
 const SLOTS = "slots";
 export class IdbStateStorage implements StateStorage {
@@ -43,6 +45,12 @@ export class IdbStateStorage implements StateStorage {
         const db = await this.db();
         const tx = db.transaction(SLOTS, "readwrite");
         tx.objectStore(SLOTS).put(rec, String(slot));
+        await new Promise<void>((res, rej) => { tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); tx.onabort = () => rej(tx.error ?? new Error("transaction aborted")); });
+    }
+    async clear(): Promise<void> {
+        const db = await this.db();
+        const tx = db.transaction(SLOTS, "readwrite");
+        tx.objectStore(SLOTS).clear();
         await new Promise<void>((res, rej) => { tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); tx.onabort = () => rej(tx.error ?? new Error("transaction aborted")); });
     }
 }

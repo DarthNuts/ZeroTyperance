@@ -112,6 +112,12 @@ export class CoopTitleScreen implements PreScreen<CoopStartPoint> {
         else if (to === "demo")
             this.restart();
     }
+    where(): "title" | "options" | "password" {
+        const o = this.chain?.options ?? null;
+        if (o && this.chain!.phase === "options")
+            return o.showingPassword && this.password ? "password" : "options";
+        return "title";
+    }
     picture(): ScreenPicture {
         const o = this.chain?.options ?? null;
         if (o && this.chain!.phase === "options" && o.showingPassword && this.password) {

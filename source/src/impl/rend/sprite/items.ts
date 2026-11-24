@@ -161,6 +161,7 @@ export function drawItemRecord(rec: ItemRecord, inputs: PassInputs): void {
             else
                 R = ctx.draw();
             frameNo = (R & hyd.CORPSE_CELL_FRAME_MASK) !== 0 ? 1 : 0;
+            ctx.observer?.corpseFrame(rec.cell, frameNo);
         }
         const bank = assets.bank(comp.bank);
         const state = bank?.states[stateNo];

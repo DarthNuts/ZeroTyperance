@@ -144,6 +144,10 @@
    "value": 100
   },
   {
+   "id": "APP.AUDIO.VOLUME_STEP",
+   "value": 5
+  },
+  {
    "id": "APP.TOUCH.DEFAULT",
    "value": "auto"
   },
@@ -192,6 +196,22 @@
    "value": "F7"
   },
   {
+   "id": "APP.KEYS.RENDERER",
+   "value": "F9"
+  },
+  {
+   "id": "APP.KEYS.MOMENT",
+   "value": "F2"
+  },
+  {
+   "id": "APP.KEYS.MOTIONLOG",
+   "value": "F4"
+  },
+  {
+   "id": "APP.KEYS.LAYOUT",
+   "value": "F10"
+  },
+  {
    "id": "APP.PW.SLOTS",
    "value": 41
   },
@@ -209,7 +229,7 @@
   },
   {
    "id": "APP.MOUSE.SENS_DEFAULT",
-   "value": 8
+   "value": 4
   },
   {
    "id": "APP.MOUSE.DRAIN",
@@ -333,15 +353,41 @@
   },
   {
    "id": "APP.MODERN.MOUSE.SENS_DEFAULT",
-   "value": 10
+   "value": 5
   },
   {
    "id": "APP.MODERN.MOUSE.SMOOTH_MAX",
    "value": 8
   },
   {
+   "id": "APP.SLIDES.TITLES",
+   "value": [
+    "Custom renderer",
+    "Modern controls",
+    "Co-op",
+    "Cheats",
+    "Passwords",
+    "Save states"
+   ]
+  },
+  {
+   "id": "APP.SLIDES.TEXTS",
+   "value": [
+    "The same world at your screen's resolution: widescreen, sharp textures, smooth motion. The original picture is one switch away.",
+    "Turn with the mouse; jump, crouch, fire and pick weapons with their own keys. Or keep the controller's combinations.",
+    "Play the whole game with a friend online: one opens a room, the other joins with its code.",
+    "Ten switches for the game's own cheat codes, on or off at any time from the menu.",
+    "Start any level from its password; the passwords you reach are kept for you.",
+    "Save the game at any moment and load it back, a key each."
+   ]
+  },
+  {
+   "id": "APP.SLIDES.MS",
+   "value": 6000
+  },
+  {
    "id": "APP.VERSION",
-   "value": "0.2.0"
+   "value": "0.3.0"
   }
  ]
 }

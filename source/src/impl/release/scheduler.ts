@@ -1,5 +1,5 @@
 import type { AppConstants } from "./constants.js";
-const BLANKS_PER_SECOND = 60;
+export const BLANKS_PER_SECOND = 60;
 const CLOCK_EPS_MS = 1e-6;
 export type SpeedMode = "original" | "custom";
 export function clampCustomSteps(c: AppConstants, v: number): number {

@@ -17,7 +17,7 @@ import type { ModernConstants } from "../modern/constants.js";
 import type { ModernSeat } from "../modern/seat.js";
 import { turnCapOf } from "../modern/move.js";
 import { modernWeaponPad, weaponSelect } from "../modern/select.js";
-import { requestOfEffect, soundDriverLevelStart, soundRequest } from "./sound.js";
+import { isVoiceMessage, requestOfEffect, soundDriverLevelStart, soundRequest } from "./sound.js";
 import type { SoundDriver, SoundEvent, SoundGates, SoundTable } from "./sound.js";
 import type { WeaponState } from "../weapon/core.js";
 import type { RendConstants } from "../rend/constants.js";
@@ -32,7 +32,10 @@ import type { SoldierConstants, SpriteConstants } from "../rend/sprite/constants
 import { IMPACT_DRAW_VECTOR, PARTICLE_DRAW_VECTOR } from "../rend/sprite/constants.js";
 import type { EntityPool, EntityRecord, SpriteAssets, SpriteContext } from "../rend/sprite/types.js";
 import type { SkyConstants } from "../rend/sky/constants.js";
-import { scrollOfAngle, skyRedrawWhole, skyStart, skyTick } from "../rend/sky/core.js";
+import { scrollOfAngle, skyRedrawWhole, skyStart, skyTick, vscrollOfFloor } from "../rend/sky/core.js";
+import { finishSnapshot, snapshotObserver, snapshotSinkOf } from "../rend/hd/snapshot.js";
+import { timedPart } from "../rend/hd/step_parts.js";
+const SNAPSHOT_CITY_CLASS = "city";
 import { twinkleCopy } from "../rend/sky/city.js";
 import type { SkyAssets, SkyState } from "../rend/sky/core.js";
 import { bodyOf, writeBody } from "../soldier/body.js";
@@ -57,6 +60,8 @@ import type { LiftState } from "../lift/core.js";
 import { weaponOfItem } from "../weapon/core.js";
 import type { MessageState } from "../pickup/core.js";
 import { draw, octDist } from "../hydaca/arith.js";
+import { getPlaceConstants, placeOf } from "../coop/place.js";
+import type { Place } from "../coop/place.js";
 import { crabAi, corpseDamage as crabCorpseDamage, damageEntry as crabDamageEntry } from "../hydaca/core.js";
 import { VECTORS as HYD_VECTORS } from "../hydaca/constants.js";
 import type { HydConstants } from "../hydaca/constants.js";
@@ -113,7 +118,7 @@ import { LevelStartScreen } from "../start/screen.js";
 import type { EventSink, GameEvent } from "../../domain.js";
 import { keptStart } from "./kept.js";
 import type { KeptMem } from "./kept.js";
-import { partnerPoolRecord } from "./partner_figure.js";
+import { partnerPoolRecord, PARTNER_PICTURE_HOOK } from "./partner_figure.js";
 import { PARTNER_PREFIX } from "../rend/sprite/partner.js";
 import type { PartnerConstants } from "../rend/sprite/partner.js";
 export class RefusedError extends Error {
@@ -805,7 +810,7 @@ interface PictureFloorLeft {
     readonly blocks: readonly number[];
     readonly viewDistance: number;
 }
-function pictureFloorOf(state: TickState, left: PictureFloorLeft | null = null): FloorMap {
+function pictureFloorOf(state: TickState, left: PictureFloorLeft | null = null): ReturnType<typeof floorMapFrom> {
     const doc = state.env.mapsDoc as {
         floors?: Array<{
             index?: unknown;
@@ -945,20 +950,7 @@ function addNamesPending(state: TickState): void {
     w.pending = weaponOfItem(w.inventory[w.ring[0]!]!.item, state.env.W);
 }
 export function lootInto(state: TickState, item: number, amount: number): boolean {
-    if (!lootAdd(state, item, amount))
-        return false;
-    const seats = state.seats;
-    if (seats !== undefined && seats.rules !== undefined) {
-        const other: 0 | 1 = seats.live === 0 ? 1 : 0;
-        if (!seats.out[other]) {
-            const sound = seats.rules.lootSoundPartner;
-            inSeat(state, other, () => { if (lootAdd(state, item, amount))
-                withSoundSource(state, null, () => request(state, sound));
-            else
-                return; coopEvent(state, { type: "Loot.Shared", seat: other, item }); });
-        }
-    }
-    return true;
+    return lootAdd(state, item, amount);
 }
 function lootAdd(state: TickState, item: number, amount: number): boolean {
     const inventory = state.world.inventory.map((s) => ({ item: s.item.value, amount: s.amount }));
@@ -1014,10 +1006,16 @@ export function request(state: TickState, n: number): boolean {
     if (seats === undefined)
         return soundRequest(state.sound, state.env.sounds, n, gates(state.message), (e) => state.events.push(e));
     let accepted = false;
-    for (const k of hearers(state, seats)) {
+    const s = soundSources.get(state);
+    const src = s === undefined ? `p${seats.live}` : typeof s === "object" && s.key !== undefined ? s.key : undefined;
+    const voice = isVoiceMessage(state.env.sounds, n);
+    for (const { k, place: heardAt } of hearers(state, seats)) {
         const live = seats.live === k;
+        if (voice && s === undefined && !live)
+            continue;
+        const place = voice ? undefined : heardAt;
         const driver = k === 0 ? state.sound : (seats.sound1 ??= structuredClone(state.sound));
-        const ok = soundRequest(driver, state.env.sounds, n, gates(live ? state.message : seats.data.message), (e) => state.events.push({ ...e, seat: k }));
+        const ok = soundRequest(driver, state.env.sounds, n, gates(live ? state.message : seats.data.message), (e) => state.events.push({ ...e, seat: k, ...(place !== undefined ? { place } : {}), ...(src !== undefined ? { src } : {}) }));
         if (live)
             accepted = ok;
     }
@@ -1033,8 +1031,16 @@ export function armExitCountdown(state: TickState, value: number): void {
         return;
     state.hidden.exitCountdown = seats.rules?.exitCountdown ?? value;
 }
-const soundSources = new WeakMap<TickState, number | "world" | "own">();
-export function withSoundSource<T>(state: TickState, source: number | "world" | "own" | null, fn: () => T): T {
+const soundSources = new WeakMap<TickState, SoundSource>();
+export type SoundSource = number | "world" | "own" | {
+    readonly floor: number;
+    readonly at?: () => {
+        readonly x: number;
+        readonly y: number;
+    };
+    readonly key?: string;
+};
+export function withSoundSource<T>(state: TickState, source: SoundSource | null, fn: () => T): T {
     const before = soundSources.get(state);
     if (source === null)
         soundSources.delete(state);
@@ -1050,26 +1056,88 @@ export function withSoundSource<T>(state: TickState, source: number | "world" | 
             soundSources.set(state, before);
     }
 }
+function doorCentre(env: TickEnv, cell: readonly [
+    number,
+    number
+]): {
+    x: number;
+    y: number;
+} {
+    const c = env.M.POS.CELL;
+    return { x: cell[0] * c + (c >> 1), y: cell[1] * c + (c >> 1) };
+}
 export function worldRequest(state: TickState, n: number): boolean {
     return withSoundSource(state, "world", () => request(state, n));
 }
-function hearers(state: TickState, seats: Seats): Array<0 | 1> {
+function hearers(state: TickState, seats: Seats): Array<{
+    readonly k: 0 | 1;
+    readonly place?: Place;
+}> {
     const src = soundSources.get(state);
+    const plain = (...ks: Array<0 | 1>): Array<{
+        readonly k: 0 | 1;
+    }> => ks.map((k) => ({ k }));
     if (src === "own")
-        return [seats.live];
+        return plain(seats.live);
     if (seats.out[0] && seats.out[1])
-        return [0, 1];
+        return plain(0, 1);
     if (seats.out[1])
-        return [0];
+        return plain(0);
     const floorOf = (k: 0 | 1): number => (seats.live === k ? state.floorNumber : seats.data.floorNumber);
     const alive = ([0, 1] as const).filter((k) => !seats.out[k]);
     if (src === "world")
-        return alive;
-    if (src !== undefined)
-        return alive.filter((k) => floorOf(k) === src);
+        return plain(...alive);
+    const consts = seats.rules?.sound ?? getPlaceConstants();
+    const placing = consts !== null && !seats.out[0] && !seats.out[1];
+    const playerOf = (k: 0 | 1): Seats["data"]["player"] => (seats.live === k ? state.world.player : seats.data.player);
+    const view = state.env.view;
+    const placeFor = (k: 0 | 1, x: number, y: number): Place | null => {
+        const pl = playerOf(k);
+        const a = pl.angle % view.sin256.length;
+        return placeOf(x, y, pl.pos.x, pl.pos.y, view.sin256[a]!, view.neg_cos256[a]!, consts!);
+    };
+    if (src !== undefined) {
+        const floor = typeof src === "number" ? src : src.floor;
+        const at = typeof src === "number" ? undefined : src.at?.();
+        const out: Array<{
+            readonly k: 0 | 1;
+            readonly place?: Place;
+        }> = [];
+        for (const k of alive) {
+            if (floorOf(k) !== floor)
+                continue;
+            if (placing && at !== undefined) {
+                const place = placeFor(k, at.x, at.y);
+                if (place !== null)
+                    out.push({ k, place });
+            }
+            else
+                out.push({ k });
+        }
+        return out;
+    }
     if (seats.out[seats.live])
         return [];
-    return alive.filter((k) => k === seats.live || floorOf(k) === floorOf(seats.live));
+    const liveSeat = seats.live;
+    const out: Array<{
+        readonly k: 0 | 1;
+        readonly place?: Place;
+    }> = [];
+    for (const k of alive) {
+        if (k === liveSeat)
+            out.push({ k });
+        else if (floorOf(k) === floorOf(liveSeat)) {
+            if (placing && src === undefined) {
+                const at = playerOf(liveSeat).pos;
+                const place = placeFor(k, at.x, at.y);
+                if (place !== null)
+                    out.push({ k, place });
+            }
+            else
+                out.push({ k });
+        }
+    }
+    return out;
 }
 function seatEvent(state: TickState, ev: SoundEvent): void {
     const seats = state.seats;
@@ -1087,10 +1155,6 @@ export type CoopEvent = {
     readonly type: "Coop.Pause";
     readonly seat: 0 | 1;
     readonly on: boolean;
-} | {
-    readonly type: "Loot.Shared";
-    readonly seat: 0 | 1;
-    readonly item: number;
 };
 export function coopEvent(state: TickState, ev: CoopEvent): void {
     if (state.seats === undefined)
@@ -1406,10 +1470,19 @@ function queueChain(state: TickState, id: Parameters<typeof textOf>[0], voice: P
 }
 function messageVoice(state: TickState, n: number): void {
     const a = state.message.announcing;
+    const from = state.events.length;
     if (state.seats !== undefined && a !== null && chainTexts.has(a))
         withSoundSource(state, "own", () => request(state, n));
     else
         request(state, n);
+    if (a === null)
+        return;
+    const phrase = { key: a.voice.map((e) => e[1]).join(","), first: state.message.voiceEntry === 0 };
+    for (let i = from; i < state.events.length; i++) {
+        const e = state.events[i]!;
+        if (e.type === "Audio.PlayVoice")
+            state.events[i] = { ...e, phrase };
+    }
 }
 function markersOfFloor(state: TickState, floor: number): number {
     const cells = cellSourceOf(state);
@@ -1511,12 +1584,81 @@ function liftTileAction(state: TickState, cls: number, notes: string[]): void {
         return;
     if (r.notSecured)
         queueMessage(state.message, textOf(env.P.FLOW_MSG.NOT_SECURED.ID, env.P.FLOW_MSG.NOT_SECURED.VOICE, env.texts), env.P);
+    if (r.sound && state.seats !== undefined) {
+        const k = state.seats.live;
+        const cab = state.seats.cab ?? [null, null];
+        cab[k] = { floor: state.floorNumber, x: world.player.pos.x >> env.R.CELL_SHIFT, y: world.player.pos.y >> env.R.CELL_SHIFT };
+        state.seats.cab = cab;
+        (state.seats.cabNew ??= []).push(k);
+    }
     if (r.music) {
         seatEvent(state, { type: "Audio.StopTrack", id: world.level.episode.value });
         request(state, L.MUSIC);
     }
     if (r.sound)
         request(state, L.SOUND);
+}
+export const COOP_ONE_CAB = { on: true };
+function liftStartEffects(state: TickState): void {
+    const L = state.env.L;
+    const lift = state.hidden.lift;
+    if (!lift.music) {
+        lift.music = true;
+        seatEvent(state, { type: "Audio.StopTrack", id: state.world.level.episode.value });
+        request(state, L.MUSIC);
+    }
+    request(state, L.SOUND);
+}
+function cabJoin(state: TickState, notes: string[]): void {
+    const seats = state.seats;
+    if (seats === undefined)
+        return;
+    const fresh = seats.cabNew ?? [];
+    delete seats.cabNew;
+    const cab = seats.cab;
+    if (cab === undefined)
+        return;
+    const L = state.env.L;
+    const shift = state.env.R.CELL_SHIFT;
+    const live = (k: 0 | 1): boolean => k === seats.live;
+    const liftOf = (k: 0 | 1): LiftState => (live(k) ? state.hidden.lift : seats.data.lift);
+    const floorOf = (k: 0 | 1): number => (live(k) ? state.floorNumber : seats.data.floorNumber);
+    const posOf = (k: 0 | 1): {
+        x: number;
+        y: number;
+    } => (live(k) ? state.world.player.pos : seats.data.player.pos);
+    const riding = (k: 0 | 1): boolean => { const s = liftOf(k).state; return s === L.STATE.UP || s === L.STATE.DOWN; };
+    for (const k of [0, 1] as const)
+        if (cab[k] !== null && (!riding(k) || floorOf(k) !== cab[k]!.floor))
+            cab[k] = null;
+    const order: Array<0 | 1> = [0, 1];
+    order.sort((a, b) => Number(fresh.includes(a)) - Number(fresh.includes(b)));
+    for (const a of order) {
+        const from = cab[a];
+        const b: 0 | 1 = a === 0 ? 1 : 0;
+        if (from === null || seats.out[b] || seats.out[a])
+            continue;
+        if (floorOf(b) !== from.floor)
+            continue;
+        const pb = posOf(b);
+        if (pb.x >> shift !== from.x || pb.y >> shift !== from.y)
+            continue;
+        const la = liftOf(a);
+        const lb = liftOf(b);
+        if (!riding(b)) {
+            inSeat(state, b, () => liftStartEffects(state));
+            lb.state = la.state;
+            lb.slide = la.slide;
+            cab[b] = { ...from };
+            notes.push(`ZT-COOP 4.9 item 8: seat ${b} standing in the cab (${from.x}, ${from.y}) rides with seat ${a} (lift state ${la.state}, slide ${la.slide})`);
+        }
+        else if (fresh.includes(b) && cab[b] !== null && cab[b]!.x === from.x && cab[b]!.y === from.y && (lb.state !== la.state || lb.slide !== la.slide)) {
+            lb.state = la.state;
+            lb.slide = la.slide;
+            notes.push(`ZT-COOP 4.9 item 8: seat ${b} entered the cab (${from.x}, ${from.y}) during seat ${a}'s ride: it joins (lift state ${la.state}, slide ${la.slide})`);
+        }
+        break;
+    }
 }
 function entityPass(state: TickState, notes: string[]): void {
     const { world, env } = state;
@@ -1586,13 +1728,33 @@ function entityPass(state: TickState, notes: string[]): void {
         if (state.seats === undefined)
             ai();
         else
-            inSeat(state, pickSeat(state, e), () => withSoundSource(state, e.floor, ai));
+            inSeat(state, pickSeat(state, e), () => withSoundSource(state, { floor: e.floor, at: () => e.pos, key: `e${e.slot}` }, ai));
     }
 }
 interface PictureForShot {
     readonly cx: number;
     readonly cy: number;
     readonly gateScale: number;
+}
+function snapshotSky(state: TickState, angle: number): {
+    class: string | null;
+    vs: number | null;
+    strips: {
+        shown: boolean;
+        A: number;
+        y: number;
+        floor: number;
+        z: number;
+    } | null;
+} {
+    const sky = state.env.sky;
+    if (sky === null)
+        return { class: null, vs: null, strips: null };
+    const cls = sky.C.CLASS_BY_EPISODE[String(state.world.level.episode.value)] ?? null;
+    const s = state.hidden.sniper;
+    const gatesIdle = !s.active && !s.fire && s.flash === TICK.SNIPER_GATE_IDLE;
+    const strips = cls === SNAPSHOT_CITY_CLASS ? { shown: gatesIdle, A: angle, y: state.world.player.pos.y, floor: state.floorNumber, z: 0 } : null;
+    return { class: cls, vs: vscrollOfFloor(state.floorNumber, sky.C), strips };
 }
 export function firstPicture(state: TickState, notes: string[]): void {
     picture(state, state.world.player.angle, state.world.player.eye_offset, notes);
@@ -1640,10 +1802,23 @@ function picture(state: TickState, angle: number, eye: number, notes: string[], 
     const puppet = withPartner ? partnerPoolRecord(state, env.PARTNER) : null;
     if (puppet !== null)
         pool.records.push(puppet);
+    if (withPartner && state.seats !== undefined)
+        PARTNER_PICTURE_HOOK.cb?.(state.seats.live, puppet, state);
     const ctx: SpriteContext = { SC: env.SPR, ES: env.ES, assets: env.spriteAssets, phase: world.core.phase, cells: [], pool, playerFloor: world.level.sub_id, kinds: env.kinds, camera: { C: env.CAMERA, playerX: world.player.pos.x, playerY: world.player.pos.y }, draw: () => draw(state.rng), hyd: env.HYD, player: { x: world.player.pos.x, y: world.player.pos.y } };
     state.hidden.laneEyePrev = s16(eye);
     const light: LightView = { viewDistance: left?.viewDistance ?? state.hidden.viewDistance, beamFirst: lightCarried(world.player.passive, env.LIGHT) ? state.hidden.beamFirst : null, night: nightCarried(world.player.passive, env.LIGHT) };
-    const rec = renderView({ x: world.player.pos.x, y: world.player.pos.y, angle, eye, liftHeight: state.hidden.lift.slide }, pictureFloorOf(state, left), env.R, env.view, env.rendAssets, state.doors.queue.map((d) => ({ cell: d.cell, timer: d.timer })), ctx, light);
+    const pose = { x: world.player.pos.x, y: world.player.pos.y, angle, eye, liftHeight: state.hidden.lift.slide };
+    const floorMap = pictureFloorOf(state, left);
+    const doorViews = state.doors.queue.map((d) => ({ cell: d.cell, timer: d.timer }));
+    const sink = snapshotSinkOf(state);
+    const snap = sink !== null ? timedPart("snapshotMs", () => sink({ step: world.core.phase, seat: state.seats?.live ?? 0, pose, floor: floorMap, doors: doorViews, overlay: ctx.cells, light, sky: snapshotSky(state, angle) }, state) ?? null) : null;
+    const observer = snap !== null ? snapshotObserver(snap, env.spriteAssets) : null;
+    if (observer !== null)
+        ctx.observer = observer;
+    const rec = timedPart("pictureMs", () => renderView(pose, floorMap, env.R, env.view, env.rendAssets, doorViews, ctx, light));
+    if (snap !== null && observer !== null) {
+        timedPart("snapshotMs", () => finishSnapshot(snap, { SC: env.SPR, assets: env.spriteAssets, phase: world.core.phase, hyd: env.HYD, cleared: rec.events.filter((e) => e.type === "Map.Write").map((e) => [e.x, e.y] as const), frames: observer.frames }, env.R, env.view));
+    }
     state.lastPicture = rec;
     state.lastPictureAngle = angle;
     state.lastPictureEye = eye;
@@ -2233,6 +2408,7 @@ export interface IterationPrologue {
     readonly pad: number;
     readonly mode: number;
     readonly blanksBeforeReload: number;
+    readonly blanksBeforeReload1?: number;
     readonly notes: string[];
     readonly drawsBefore: number;
     readonly invBefore: readonly string[];
@@ -2448,17 +2624,18 @@ function tickPrologueBody(state: TickState, inputs: IterationInputs, notes: stri
         state.hidden.deathFlash = deathFlashStep(state.hidden.deathFlash, D);
         state.display.flashEntry = state.hidden.deathFlash & D["FLASH.CRAM_MASK"];
     }
-    if (state.seats !== undefined && !state.seats.out[1])
-        seat1Prologue(state, s16(timerBefore - bCandidate), inputs);
+    const blanksBeforeReload1 = state.seats !== undefined && !state.seats.out[1] ? seat1Prologue(state, bCandidate, inputs) : 0;
     state.hidden.delayTimer = Math.max(0, state.hidden.delayTimer - n);
     const mode = state.hidden.controller.mode;
     const pad = controllerPoll(state, inputs.pad, notes);
     world.core.phase = u16(world.core.phase + TICK.PHASE_ADVANCE);
     animWallsStep(state.animWalls);
+    if (state.seats !== undefined)
+        animWallsStep(state.seats.data.animWalls);
     const startNow = ((pad >> PAD_BIT.START) & 1) !== 0;
     const startBefore = ((inputs.prev >> PAD_BIT.START) & 1) !== 0;
     const freshStart = startNow && !startBefore && mode === CONTROLLER_MODE.PAD;
-    return { pad, mode, blanksBeforeReload, notes, drawsBefore, invBefore, blanksTaken: n, freshStart };
+    return { pad, mode, blanksBeforeReload, blanksBeforeReload1, notes, drawsBefore, invBefore, blanksTaken: n, freshStart };
 }
 function residentFloor(state: TickState, floor: number): void {
     if (state.floorNumber === floor)
@@ -2509,11 +2686,15 @@ export function seat1PauseEdge(state: TickState): void {
         coopEvent(state, { type: "Coop.Pause", seat: 1, on: s.pause[1] });
     }
 }
-function seat1Prologue(state: TickState, timer: number, inputs: IterationInputs): void {
+function seat1Prologue(state: TickState, bCandidate: number, inputs: IterationInputs): number {
     const { env } = state;
+    const seats = state.seats!;
+    const timerBefore1 = s16(seats.voiceTimer1 ?? state.world.message.voice_timer);
+    let reloads1 = 0;
     inSeat(state, 1, () => {
         const msgBefore = { counter: state.message.displayCounter, next: state.message.queue[0] };
-        floorMessageStep(state.message, timer, state.world.options.sound.voice_announce, env.P, (ev) => messageVoice(state, ev.request));
+        const after1 = floorMessageStep(state.message, s16(timerBefore1 - bCandidate), state.world.options.sound.voice_announce, env.P, (ev) => { reloads1++; messageVoice(state, ev.request); });
+        seats.voiceTimer1 = reloads1 > 0 ? s16(after1) : timerBefore1;
         if (msgBefore.counter === 0 && msgBefore.next !== undefined)
             state.display.message = { kind: "pop", rows: [...msgBefore.next.rows] };
         else if (msgBefore.counter !== 0 && state.message.displayCounter === 0)
@@ -2528,6 +2709,7 @@ function seat1Prologue(state: TickState, timer: number, inputs: IterationInputs)
             state.display.flashEntry = state.hidden.deathFlash & env.death["FLASH.CRAM_MASK"];
         }
     });
+    return reloads1 > 0 ? bCandidate : 0;
 }
 function seat1End(state: TickState, notes: string[]): void {
     const { env } = state;
@@ -2630,7 +2812,7 @@ function playerStep(state: TickState, pad: number, _notes: string[]): MoveStepRe
     p.knockback.y = mp.knockbackY;
     const opened = doorOpener(state.doors, p.pos.x, p.pos.y, state.floorNumber, env.D);
     if (opened !== null)
-        withSoundSource(state, state.floorNumber, () => request(state, requestOfEffect(env.sounds, opened.id, opened.note)));
+        withSoundSource(state, { floor: state.floorNumber, at: () => doorCentre(env, state.doors.queue[state.doors.queue.length - 1]!.cell), key: `c${state.doors.queue[state.doors.queue.length - 1]!.cell.join(",")}` }, () => request(state, requestOfEffect(env.sounds, opened.id, opened.note)));
     return step;
 }
 function viewStage(state: TickState, pad: number, step: MoveStepResult, notes: string[]): {
@@ -2680,6 +2862,8 @@ function tickEpilogueBody(state: TickState, inputs: IterationInputs, pro: Iterat
     entityPass(state, notes);
     const view0 = step !== null ? viewStage(state, pad, step, notes) : null;
     const view1 = two ? inSeat(state, 1, () => viewStage(state, seats!.pad1 & 0xff, step1!, notes)) : null;
+    if (seats !== undefined && COOP_ONE_CAB.on)
+        cabJoin(state, notes);
     const bobAngle = view0?.bobAngle ?? 0;
     const alive = world.entities.filter((e) => (e.flags.value & FLAG_ALIVE) !== 0);
     const other = two && in0 ? seats!.data.player.pos : null;
@@ -2692,7 +2876,7 @@ function tickEpilogueBody(state: TickState, inputs: IterationInputs, pro: Iterat
         return alive.some((e) => inBox(e.pos.x, e.pos.y)) || (other !== null && inBox(other.x, other.y));
     }, env.D);
     const removed = queued.filter((q) => !state.doors.queue.includes(q));
-    closed.forEach((s, i) => withSoundSource(state, removed[i]?.floor ?? state.floorNumber, () => request(state, requestOfEffect(env.sounds, s.id, s.note))));
+    closed.forEach((s, i) => withSoundSource(state, { floor: removed[i]?.floor ?? state.floorNumber, ...(removed[i] !== undefined ? { at: () => doorCentre(env, removed[i]!.cell), key: `c${removed[i]!.cell.join(",")}` } : {}) }, () => request(state, requestOfEffect(env.sounds, s.id, s.note))));
     if (in0)
         drainStage(state, bobAngle, notes);
     if (two)
@@ -2706,6 +2890,8 @@ function tickEpilogueBody(state: TickState, inputs: IterationInputs, pro: Iterat
     }
     world.core.frame = u16(world.core.frame + TICK.BLANK.FRAME * n);
     world.message.voice_timer = s16(world.message.voice_timer + TICK.BLANK.VOICE * (n - blanksBeforeReload));
+    if (state.seats !== undefined && state.seats.voiceTimer1 !== undefined)
+        state.seats.voiceTimer1 = s16(state.seats.voiceTimer1 + TICK.BLANK.VOICE * (n - (pro.blanksBeforeReload1 ?? 0)));
     if (pause === null)
         world.link.health = u16(world.link.health + TICK.BLANK.LINK * n);
     else {

@@ -1,3 +1,5 @@
+import type { Action, KeyBindings, PadBindings } from "./input.js";
+import type { ModernAction, ModernBindings } from "./modern_input.js";
 export type InputScheme = "original" | "modern";
 export type InputRowKind = "controls" | "binding" | "defaults" | "modern_binding" | "modern_defaults" | "touch" | "mouse" | "mouse_sensitivity" | "modern_sensitivity" | "modern_accel" | "modern_decel" | "modern_smoothing" | "turn_cap" | "selection" | "crouch_toggle";
 export interface InputRowDesc {
@@ -46,4 +48,34 @@ export function inputRowLayout(s: InputRowsSpec): InputRowDesc[] {
         { kind: "crouch_toggle", label: "Crouch toggle" },
         touch,
     ];
+}
+export const CLEAR_KEY_CODES: readonly string[] = ["Delete", "Backspace"];
+export const isClearKey = (code: string): boolean => CLEAR_KEY_CODES.includes(code);
+export const MENU_CLEAR_REFUSED = "The menu key cannot be cleared; bind it to another key.";
+export type ClearPart = "key" | "pad";
+export interface ClearResult {
+    keys: KeyBindings;
+    pad: PadBindings;
+    note: string | null;
+    changed: boolean;
+}
+export function clearBinding(keys: KeyBindings, pad: PadBindings, action: Action, part: ClearPart): ClearResult {
+    if (action === "menu")
+        return { keys, pad, note: MENU_CLEAR_REFUSED, changed: false };
+    if (part === "pad") {
+        if (pad[action] === null)
+            return { keys, pad, note: null, changed: false };
+        return { keys, pad: { ...pad, [action]: null }, note: null, changed: true };
+    }
+    if (keys[action] === null)
+        return { keys, pad, note: null, changed: false };
+    return { keys: { ...keys, [action]: null }, pad, note: null, changed: true };
+}
+export function clearModernBinding(b: ModernBindings, action: ModernAction): {
+    bindings: ModernBindings;
+    changed: boolean;
+} {
+    if (b[action].length === 0)
+        return { bindings: b, changed: false };
+    return { bindings: { ...b, [action]: [] }, changed: true };
 }

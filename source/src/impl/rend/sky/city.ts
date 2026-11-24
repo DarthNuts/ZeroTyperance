@@ -17,8 +17,17 @@ export interface CityStrip {
     readonly hCells: number;
     readonly tileWord: number;
 }
-export function cityStrips(angle: number, y: number, floor: number, z: number, C: SkyConstants): CityStrip[] {
+export interface CityValues {
+    readonly d: number;
+    readonly Y: number;
+}
+export function cityValues(angle: number, y: number, floor: number, z: number, C: SkyConstants): CityValues {
     const d = u16(C["CITY.AZ_BASE"] - 2 * angle - (s16(y) >> C["CITY.Y_SHIFT"])) & AZ_MASK;
+    const Y = u16(C["CITY.Y_TOP"] - (C["CITY.FLOOR_STEP"] * floor + (s16(z) >> C["CITY.Z_SHIFT"])));
+    return { d, Y };
+}
+export function cityStrips(angle: number, y: number, floor: number, z: number, C: SkyConstants): CityStrip[] {
+    const { d, Y: Y0 } = cityValues(angle, y, floor, z, C);
     if (d === 0 || d >= C["CITY.AZ_END"])
         return [];
     let w: number;
@@ -39,7 +48,7 @@ export function cityStrips(angle: number, y: number, floor: number, z: number, C
     for (let i = 0; i < w >> STRIP_SHIFT; i++)
         widths.push(STRIP_FULL_CELLS);
     widths.push((w & STRIP_REMAINDER_MASK) + 1);
-    let Y = u16(C["CITY.Y_TOP"] - (C["CITY.FLOOR_STEP"] * floor + (s16(z) >> C["CITY.Z_SHIFT"])));
+    let Y = Y0;
     let j = 0;
     while (s16(Y) <= C["CITY.Y_CLIP"]) {
         Y = u16(Y + ROW_STEP);
@@ -86,4 +95,75 @@ export function twinkleCopy(tiles: Uint8Array, tileBase: number, group: number, 
         tiles[a + k] = frames[src + k]!;
         tiles[b + k] = frames[src + SECOND_TILE_FRAME_OFFSET + k]!;
     }
+}
+const SPRITE_ORIGIN = 128;
+const WRAP_HALF = 512;
+const WRAP_MASK = 1023;
+const TILE_ROW_BYTES = 4;
+const PALETTE_LINE_SHIFT = 13;
+const PALETTE_LINE_MASK = 3;
+const PALETTE_LINE_COLOURS = 16;
+const NIBBLE = 4;
+const NIBBLE_MASK = 15;
+export function cityBuildingLeft(d: number): number {
+    return ((d - SPRITE_ORIGIN + WRAP_HALF) & WRAP_MASK) - WRAP_HALF;
+}
+export function cityBuildingWidth(C: SkyConstants): number {
+    return (C["CITY.WIDTH_MAX"] + 1) << WIDTH_SHIFT;
+}
+export interface CityBuildingLayer {
+    readonly cols: number;
+    readonly rows: number;
+    readonly indices: Uint8Array;
+    readonly x0: number;
+    readonly y0: number;
+    readonly repeatFrom: number;
+    readonly period: number;
+}
+export function cityBuildingLayer(v: CityValues, far: {
+    readonly cols: number;
+    readonly rows: number;
+    readonly indices: Uint8Array;
+}, viewX0: number, viewY0: number, tile: (tileNumber: number) => Uint8Array | undefined, C: SkyConstants): CityBuildingLayer {
+    const cell = C.CELL;
+    const width = cityBuildingWidth(C);
+    const bx = cityBuildingLeft(v.d) - viewX0;
+    const top0 = s16(v.Y) - SPRITE_ORIGIN - viewY0;
+    const blocks = C["CITY.ROW_BLOCKS"];
+    let jRep = blocks.length;
+    while (top0 + ROW_STEP * jRep < far.rows)
+        jRep += 1;
+    const x0 = Math.min(0, bx);
+    const y0 = Math.min(0, top0);
+    const cols = Math.max(far.cols, bx + width) - x0;
+    const rows = top0 + ROW_STEP * (jRep + 1) - y0;
+    const out = new Uint8Array(cols * rows);
+    for (let j = 0; j <= jRep; j++) {
+        const B = j < blocks.length ? blocks[j]! : 0;
+        const tw = u16(C["CITY.TILE_BASE"] + C["CITY.BLOCK_STEP"] * B);
+        const line = ((tw >> PALETTE_LINE_SHIFT) & PALETTE_LINE_MASK) * PALETTE_LINE_COLOURS;
+        const base = tw & TILE_NUMBER_MASK;
+        for (let py = 0; py < ROW_STEP; py++) {
+            const ly = top0 + ROW_STEP * j + py - y0;
+            const r = Math.floor(py / cell);
+            for (let px = 0; px < width; px++) {
+                const c = Math.floor(px / cell) & STRIP_REMAINDER_MASK;
+                const t = tile(base + c * STRIP_CELLS_HIGH + r);
+                if (t === undefined)
+                    continue;
+                const fx = px % cell;
+                const byte = t[(py % cell) * TILE_ROW_BYTES + (fx >> 1)]!;
+                const nib = (fx & 1) !== 0 ? byte & NIBBLE_MASK : (byte >> NIBBLE) & NIBBLE_MASK;
+                if (nib !== 0)
+                    out[ly * cols + bx + px - x0] = line + nib;
+            }
+        }
+    }
+    for (let y = 0; y < far.rows; y++)
+        for (let x = 0; x < far.cols; x++) {
+            const i = far.indices[y * far.cols + x]!;
+            if (i !== 0)
+                out[(y - y0) * cols + x - x0] = i;
+        }
+    return { cols, rows, indices: out, x0, y0, repeatFrom: top0 + ROW_STEP * jRep - y0, period: ROW_STEP };
 }

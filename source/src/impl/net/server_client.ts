@@ -10,11 +10,12 @@ export interface WsLike {
     onclose: ((ev?: unknown) => void) | null;
     onerror: ((ev?: unknown) => void) | null;
 }
-export type ServerErrorReason = "proto" | "no_room" | "room_full" | "bad_message" | "too_big" | "rate" | "server_full";
+export type ServerErrorReason = "proto" | "no_room" | "room_full" | "wrong_code" | "bad_message" | "too_big" | "rate" | "server_full";
 export type PeerLeftReason = "leave" | "closed" | "timeout";
 export const REFUSAL_TEXT: Readonly<Record<ServerErrorReason, string>> = {
     no_room: "no such room",
     room_full: "the room is full",
+    wrong_code: "wrong code for this room",
     proto: "another version of the co-op protocol",
     server_full: "the server is busy",
     bad_message: "the server did not understand the page",
@@ -62,9 +63,56 @@ export class Unreachable extends Error {
     constructor(readonly url: string) { super(`cannot reach the co-op server (${url})`); this.name = "Unreachable"; }
 }
 export interface RoomInfo {
-    readonly code: string;
+    readonly id: string;
+    readonly name: string;
     readonly where: string;
     readonly age_s: number;
+}
+export const DEFAULT_ROOM_NAME = "Zero Tolerance";
+export function cleanRoomName(name: unknown, c: NetConstants): string {
+    if (typeof name !== "string")
+        return DEFAULT_ROOM_NAME;
+    const kept = Array.from(name.replace(/[\u0000-\u001f\u007f-\u009f]/g, "").trim()).slice(0, c.roomNameMax).join("").trimEnd();
+    return kept === "" ? DEFAULT_ROOM_NAME : kept;
+}
+export function askInfo(url: string, openSocket: (url: string) => WsLike): Promise<string | null> {
+    return new Promise<string | null>((resolve, reject) => {
+        const ws = openSocket(url);
+        let isOpen = false;
+        let done = false;
+        const finish = (v: string | null): void => { if (done)
+            return; done = true; try {
+            ws.close();
+        }
+        catch { } resolve(v); };
+        ws.onopen = () => { isOpen = true; ws.send(JSON.stringify({ t: "info" })); };
+        ws.onerror = () => { };
+        ws.onclose = () => { if (done)
+            return; if (!isOpen) {
+            done = true;
+            reject(new Unreachable(url));
+        }
+        else
+            finish(null); };
+        ws.onmessage = (ev) => {
+            if (typeof ev.data !== "string")
+                return;
+            let m: {
+                t?: unknown;
+                computer?: unknown;
+            };
+            try {
+                m = JSON.parse(ev.data) as typeof m;
+            }
+            catch {
+                return;
+            }
+            if (m.t === "info")
+                finish(typeof m.computer === "string" ? m.computer : "");
+            else if (m.t === "error")
+                finish(null);
+        };
+    });
 }
 export class RoomLister {
     private ws: WsLike | null = null;
@@ -74,7 +122,7 @@ export class RoomLister {
         reject(e: Error): void;
     }[] = [];
     unsupported = false;
-    constructor(private readonly url: string, private readonly openSocket: (url: string) => WsLike) { }
+    constructor(private readonly url: string, private readonly openSocket: (url: string) => WsLike, private readonly proto: number) { }
     ask(): Promise<RoomInfo[] | null> {
         if (this.unsupported)
             return Promise.resolve(null);
@@ -82,7 +130,7 @@ export class RoomLister {
             this.connect();
         return this.opened!.then(() => new Promise<RoomInfo[] | null>((resolve, reject) => {
             this.waiting.push({ resolve, reject });
-            this.ws!.send(JSON.stringify({ t: "rooms" }));
+            this.ws!.send(JSON.stringify({ t: "rooms", proto: this.proto }));
         }));
     }
     close(): void {
@@ -131,14 +179,15 @@ export class RoomLister {
             }
             if (m.t === "rooms" && Array.isArray(m.rooms)) {
                 const list = (m.rooms as {
-                    code?: unknown;
+                    id?: unknown;
+                    name?: unknown;
                     where?: unknown;
                     age_s?: unknown;
-                }[]).filter((r) => r && typeof r.code === "string")
-                    .map((r): RoomInfo => ({ code: r.code as string, where: typeof r.where === "string" ? r.where : "", age_s: typeof r.age_s === "number" ? r.age_s : 0 }));
+                }[]).filter((r) => r && typeof r.id === "string")
+                    .map((r): RoomInfo => ({ id: r.id as string, name: typeof r.name === "string" ? r.name : DEFAULT_ROOM_NAME, where: typeof r.where === "string" ? r.where : "", age_s: typeof r.age_s === "number" ? r.age_s : 0 }));
                 this.waiting.shift()?.resolve(list);
             }
-            else if (m.t === "error" && m.reason === "bad_message") {
+            else if (m.t === "error" && (m.reason === "bad_message" || m.reason === "proto")) {
                 this.unsupported = true;
                 this.ws = null;
                 this.opened = null;
@@ -192,6 +241,8 @@ export class ServerClient {
     state: ClientState = "connecting";
     seat: 0 | 1 | null = null;
     code: string | null = null;
+    roomName: string | null = null;
+    roomId: string | null = null;
     urls: string[] = [];
     peerPresent = false;
     peerLeftReason: PeerLeftReason | null = null;
@@ -205,6 +256,7 @@ export class ServerClient {
     private readonly signals: unknown[] = [];
     private signalListener: ((data: unknown) => void) | null = null;
     private readonly relayIn: string[] = [];
+    private relayArrival: (() => void) | null = null;
     private readonly outQueue: string[] = [];
     private readonly sentAt: number[] = [];
     private openWaiters: {
@@ -233,6 +285,8 @@ export class ServerClient {
         this.state = "connecting";
         this.seat = null;
         this.code = null;
+        this.roomName = null;
+        this.roomId = null;
         this.peerPresent = false;
         this.peerLeftReason = null;
         this.lastError = null;
@@ -248,20 +302,20 @@ export class ServerClient {
             return Promise.resolve();
         return new Promise((resolve, reject) => { this.openWaiters.push({ resolve, reject }); });
     }
-    host(): Promise<{
+    host(name?: string): Promise<{
         code: string;
         seat: 0;
     }> {
-        return this.begin("host", { t: "host", proto: this.c.serverProtocol }) as Promise<{
+        return this.begin("host", { t: "host", proto: this.c.serverProtocol, ...(name !== undefined ? { name } : {}) }) as Promise<{
             code: string;
             seat: 0;
         }>;
     }
-    join(code: string): Promise<{
+    join(code: string, room?: string): Promise<{
         code: string;
         seat: 1;
     }> {
-        return this.begin("join", { t: "join", proto: this.c.serverProtocol, code }) as Promise<{
+        return this.begin("join", { t: "join", proto: this.c.serverProtocol, code, ...(room !== undefined ? { room } : {}) }) as Promise<{
             code: string;
             seat: 1;
         }>;
@@ -293,7 +347,10 @@ export class ServerClient {
     relayTransport(): Transport & {
         close(): void;
     } {
+        const self = this;
         return {
+            get onArrival() { return self.relayArrival; },
+            set onArrival(f) { self.relayArrival = f; },
             send: (channel: ChannelName, text: string) => this.sendRelay(channel === "reliable" ? "r" : "u", text),
             receive: () => { this.pump(); return this.relayIn.splice(0); },
             close: () => this.leave(),
@@ -356,6 +413,8 @@ export class ServerClient {
             case "room":
                 if (this.pending?.kind === "host") {
                     this.code = String(m.code);
+                    this.roomName = typeof m.name === "string" ? m.name : null;
+                    this.roomId = typeof m.id === "string" ? m.id : null;
                     this.urls = Array.isArray(m.urls) ? (m.urls as unknown[]).filter((u): u is string => typeof u === "string") : [];
                     this.seat = 0;
                     this.state = "in_room";
@@ -365,6 +424,7 @@ export class ServerClient {
             case "joined":
                 if (this.pending?.kind === "join") {
                     this.code = String(m.code);
+                    this.roomName = typeof m.name === "string" ? m.name : null;
                     this.seat = 1;
                     this.peerPresent = true;
                     this.state = "in_room";
@@ -392,8 +452,10 @@ export class ServerClient {
                     this.signals.push(m.data);
                 break;
             case "relay":
-                if (typeof m.data === "string")
+                if (typeof m.data === "string") {
                     this.relayIn.push(m.data);
+                    this.relayArrival?.();
+                }
                 break;
             case "error": {
                 const reason = String(m.reason);

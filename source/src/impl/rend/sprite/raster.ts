@@ -1,6 +1,26 @@
 import { asr, s16 } from "../arith.js";
 import type { SpriteConstants } from "./constants.js";
-import type { Art, SpriteAssets, SpriteRect, Surface } from "./types.js";
+import type { Art, ItemRecord, SpriteAssets, SpriteObserver, SpriteRect, Surface } from "./types.js";
+let ACTIVE_OBSERVER: SpriteObserver | null = null;
+export function setSpriteObserver(o: SpriteObserver | null): void {
+    ACTIVE_OBSERVER = o;
+}
+export interface RasterCall {
+    readonly art: Art;
+    readonly mirrored: boolean;
+    readonly rect: SpriteRect;
+    readonly clip: {
+        readonly x0: number;
+        readonly ncols: number;
+        readonly row0: number;
+        readonly nrows: number;
+    };
+}
+export const RASTER_TRACE: {
+    on: boolean;
+    calls: RasterCall[];
+    items: readonly ItemRecord[];
+} = { on: false, calls: [], items: [] };
 export interface Shading {
     readonly table: Uint8Array | null;
     readonly mirrored: Uint8Array | null;
@@ -55,6 +75,8 @@ export function beamShadingOf(surface: Surface, assets: SpriteAssets, SC: Sprite
 export function rasterize(surface: Surface, art: Art, mirrored: boolean, rect: SpriteRect, S: number, table: Uint8Array | null, SC: SpriteConstants, beamTable: Uint8Array | null = null): void {
     if (table === null)
         return;
+    if (ACTIVE_OBSERVER !== null && s16(rect.h) > 0 && s16(rect.w) > 0)
+        ACTIVE_OBSERVER.part(art, mirrored, { h: s16(rect.h), w: s16(rect.w), left: s16(rect.left), top: s16(rect.top) });
     const beam = surface.beam ?? null;
     const beamFirst = beam !== null && beamTable !== null ? beam.first : -1;
     const beamEnd = beam !== null && beamTable !== null ? beam.first + beam.count : -1;
@@ -74,6 +96,8 @@ export function rasterize(surface: Surface, art: Art, mirrored: boolean, rect: S
     const ncols = Math.min(w - skip, SC.VIEW_COLUMNS - x0);
     if (nrows <= 0 || ncols <= 0)
         return;
+    if (RASTER_TRACE.on && ACTIVE_OBSERVER !== null)
+        RASTER_TRACE.calls.push({ art, mirrored, rect: { h, w, left, top }, clip: { x0, ncols, row0, nrows } });
     const Ss = s16(S);
     const tall = h > SC.TALL_HEIGHT;
     const fracMask = (1 << SC.TALL_FRACTION_BITS) - 1;

@@ -11,6 +11,7 @@ import type { ViewRecord } from "../rend/core.js";
 import type { DisplayWrites, TickState } from "./core.js";
 import type { ModernSeat } from "../modern/seat.js";
 import type { SoundDriver } from "./sound.js";
+import type { PlaceConstants } from "../coop/place.js";
 export interface SeatFields {
     player: World["player"];
     inventory: World["inventory"];
@@ -44,9 +45,14 @@ export interface SeatFields {
     modern?: ModernSeat;
 }
 export interface SeatRules {
-    readonly lootSoundPartner: number;
     readonly bodyRadius: number;
     readonly exitCountdown?: number;
+    readonly sound?: PlaceConstants;
+}
+export interface CabStart {
+    floor: number;
+    x: number;
+    y: number;
 }
 export interface Seats {
     live: 0 | 1;
@@ -62,6 +68,7 @@ export interface Seats {
     pad1: number;
     prev1: number;
     rules?: SeatRules;
+    voiceTimer1?: number;
     sound1?: SoundDriver;
     offsetX?: number;
     handOver1?: boolean;
@@ -69,6 +76,11 @@ export interface Seats {
         boolean,
         boolean
     ];
+    cab?: [
+        CabStart | null,
+        CabStart | null
+    ];
+    cabNew?: Array<0 | 1>;
     pending?: Array<{
         readonly type: "Seat.Out";
         readonly seat: 0 | 1;
@@ -186,5 +198,5 @@ export function addSecondSeat(state: TickState, offsetX: number, character?: Tic
     const p0 = state.world.player;
     p0.pos.x += offsetX;
     state.player.x += offsetX;
-    return { live: 0, data: copy, out: [false, false], pause: [false, false], pad1: 0, prev1: 0, sound1: structuredClone(state.sound), offsetX, ...(rules !== undefined ? { rules: { lootSoundPartner: rules.lootSoundPartner, bodyRadius: rules.bodyRadius, ...(rules.exitCountdown !== undefined ? { exitCountdown: rules.exitCountdown } : {}) } } : {}) };
+    return { live: 0, data: copy, out: [false, false], pause: [false, false], pad1: 0, prev1: 0, sound1: structuredClone(state.sound), offsetX, ...(rules !== undefined ? { rules: { bodyRadius: rules.bodyRadius, ...(rules.exitCountdown !== undefined ? { exitCountdown: rules.exitCountdown } : {}) } } : {}) };
 }

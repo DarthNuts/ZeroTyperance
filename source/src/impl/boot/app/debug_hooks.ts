@@ -36,6 +36,8 @@ export interface CoreControl {
     errorText(reason: unknown): string;
     fetchJson(url: string): Promise<unknown>;
 }
+import type { HostHd } from "./host.js";
+import type { NewGameSession } from "./newgame.js";
 export interface DebugPart {
     readonly tas: boolean;
     readonly tasFinished: boolean;
@@ -53,4 +55,6 @@ export interface DebugPart {
     dropAll(): void;
     updateButtons(): void;
     onError(): void;
+    hdRows?(): HostHd | null;
+    tasSession?(): NewGameSession | null;
 }

@@ -17,8 +17,8 @@ export const CHEAT_ROWS: readonly CheatRow[] = [
     { key: "c4", label: "C4 No damage", kind: "switch" },
     { key: "c5", label: "C5 Vest drain", kind: "selector" },
     { key: "c6", label: "C6 Scanner drain", kind: "selector" },
-    { key: "fix990", label: "F1 Fix 990 (cap on written amounts)", kind: "switch" },
 ];
+export const FIX990_ROW: CheatRow = { key: "fix990", label: "Fix 990", kind: "switch" };
 export function cheatValue(s: Settings, key: CheatKey): string {
     const r = cheatRulesOf(s);
     const v = r[key];

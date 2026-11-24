@@ -1,3 +1,5 @@
+import { medianMs, pingText } from "./ping.js";
+import { motionObserver, withFrameClock } from "../boot/app/pace_loop.js";
 import { CoopPage } from "./coop_page.js";
 import type { CoopPageOptions, ScreenPicture } from "./coop_page.js";
 import { SpeedScheduler } from "./scheduler.js";
@@ -13,13 +15,36 @@ import type { PauseScreen } from "../pause/core.js";
 import { stepPace } from "./scheduler.js";
 import type { TickState } from "../tick/core.js";
 import type { StepClock } from "./step_clock.js";
+import { makeFrameCadence } from "../boot/app/frame_cadence.js";
+import type { FrameCadence } from "../boot/app/frame_cadence.js";
+export const PASS_MS = 1000 / 60;
+export const SCREEN_CATCH_UP = 10;
 export interface PartnerInfo {
     readonly hp: number | null;
     readonly choosing?: boolean;
+    readonly paused?: boolean;
+    readonly waiting?: boolean;
+}
+export const PARTNER_PAUSED_LINE = "The other player paused the game";
+export const WAITING_LINE = "Waiting for the other player";
+export const COOP_PARTNER_PAUSE = { on: true };
+function pauseFlagsOf(seats: {
+    pause: readonly boolean[];
+    out: readonly boolean[];
+} | undefined, seat: 0 | 1): {
+    own: boolean;
+    partnerAlone: boolean;
+} {
+    if (seats === undefined)
+        return { own: false, partnerAlone: false };
+    const partner = seat === 0 ? 1 : 0;
+    const own = seats.pause[seat] === true;
+    return { own, partnerAlone: COOP_PARTNER_PAUSE.on && !own && seats.pause[partner] === true && seats.out[seat] !== true };
 }
 export interface LiveHooks {
     readonly onDraw: NonNullable<CoopPageOptions["onDraw"]>;
     readonly onEffect: NonNullable<CoopPageOptions["onEffect"]>;
+    readonly onAudio: NonNullable<CoopPageOptions["onAudio"]>;
     readonly clock: () => number;
 }
 export interface CoopLiveOptions {
@@ -29,12 +54,18 @@ export interface CoopLiveOptions {
         readonly custom_steps: number;
     };
     readonly now: () => number;
+    readonly path?: () => "direct" | "relay";
     readonly makePage: (hooks: LiveHooks) => CoopPage;
     readonly pad: () => number;
     readonly menuOpen: () => boolean;
+    readonly turnsSent?: () => readonly {
+        readonly turn: number;
+        readonly at: number | null;
+    }[];
     readonly draw?: (seat: 0 | 1, step: number, core: NetCore) => void;
     readonly drawScreen?: (picture: ScreenPicture) => void;
     readonly sound?: (seat: 0 | 1, e: Effect, step: number) => void;
+    readonly audio?: (seat: 0 | 1, list: readonly Effect[], step: number) => void;
     readonly partnerInfo?: (core: NetCore, seat: 0 | 1) => PartnerInfo | null;
     readonly characterName?: (i: number) => string;
     readonly onLine?: (line: string) => void;
@@ -49,6 +80,8 @@ export interface CoopLiveOptions {
     readonly ownPause?: OwnPauseHooks;
     readonly onStepError?: (text: string, err: unknown) => void;
     readonly drawOwn?: (screen: ComposedScreen) => void;
+    readonly drawComposed?: (seat: 0 | 1, screen: ComposedScreen) => void;
+    readonly gameBlanks?: (n: number) => void;
 }
 export interface OwnPause {
     pass(core: NetCore, pad: number): readonly Effect[];
@@ -64,9 +97,10 @@ export interface CoopLive {
     readonly coop: CoopPage;
     frame(now?: number): void;
     pump(now?: number): void;
-    paint(): void;
+    paint(now?: number): void;
     readonly steps: number;
     line(): string;
+    pingText(): string | null;
     leave(): void;
     stop(): void;
     readonly stopped: boolean;
@@ -83,9 +117,39 @@ export function partnerLine(coop: CoopPage, info: PartnerInfo | null, name: (i: 
     const hp = info?.hp;
     if (info?.choosing === true)
         return `Partner: ${who} - the partner is choosing a character`;
+    if (info?.waiting === true)
+        return WAITING_LINE;
+    if (info?.paused === true)
+        return PARTNER_PAUSED_LINE;
     return `Partner: ${who}${hp === null || hp === undefined ? "" : `, ${hp} hit points`} - ${coop.status === "waiting for the partner" ? "waiting for the partner" : "linked"}`;
 }
+export const FRAMES_GONE_MS = 250;
+export const TEST_ONLY_PAD = { eager: false };
+export const TEST_ONLY_GATE = { catchUp: false, onePerFrame: false };
+export function dueCountOf(dueMs: (n: number) => number | null): (t: number) => number {
+    return (t) => {
+        const d0 = dueMs(0), d1 = dueMs(1);
+        if (d0 === null || d1 === null || !(d1 > d0) || t < d0)
+            return 0;
+        return Math.floor((t - d0) / (d1 - d0) + 1e-9) + 1;
+    };
+}
+export class FrameStepGate {
+    private stepsSinceFrame = 0;
+    private lastFrameAt = Number.NEGATIVE_INFINITY;
+    frame(now: number): void { this.stepsSinceFrame = 0; this.lastFrameAt = now; }
+    framesGone(now: number): boolean { return now - this.lastFrameAt > FRAMES_GONE_MS; }
+    mayStep(now: number, dueCount?: (t: number) => number): boolean {
+        if (TEST_ONLY_GATE.catchUp || now - this.lastFrameAt > FRAMES_GONE_MS)
+            return true;
+        const onTime = !TEST_ONLY_GATE.onePerFrame && dueCount !== undefined && Number.isFinite(this.lastFrameAt) ? Math.max(0, dueCount(now) - dueCount(this.lastFrameAt)) : 0;
+        return this.stepsSinceFrame < (TEST_ONLY_GATE.onePerFrame ? 1 : onTime + 1);
+    }
+    stepped(): void { this.stepsSinceFrame++; }
+    get onePerTick(): boolean { return !TEST_ONLY_GATE.catchUp; }
+}
 export function startCoopLive(o: CoopLiveOptions): CoopLive {
+    const gate = new FrameStepGate();
     let scheduler: SpeedScheduler | null = null;
     let speedKey = "";
     let steps = 0;
@@ -104,8 +168,22 @@ export function startCoopLive(o: CoopLiveOptions): CoopLive {
         seat: 0 | 1;
         step: number;
     } | null = null;
-    let pendingScreen = false;
+    let cadence: FrameCadence | null = null;
+    let sched: {
+        t0: number;
+        pics: (ComposedScreen | null)[];
+        shown: number;
+    } | null = null;
+    let lastPassStamp = -1;
+    let lastPassStep = -1;
     const name = o.characterName ?? ((i: number): string => `character ${i + 1}`);
+    function hand(list: readonly Effect[], step: number): void {
+        if (o.audio)
+            o.audio(coop.page.seat, list, step);
+        else
+            for (const e of list)
+                o.sound?.(coop.page.seat, e, step);
+    }
     const hooks: LiveHooks = {
         clock: o.now,
         onDraw: (seat, step) => { if (deferDraw)
@@ -113,8 +191,19 @@ export function startCoopLive(o: CoopLiveOptions): CoopLive {
         else if (coop.page.core && own === null)
             o.draw?.(seat, step, coop.page.core); },
         onEffect: (_key, e, step) => { o.sound?.(coop.page.seat, e, step); },
+        onAudio: (step, list) => { hand(list, step); },
     };
     const coop = o.makePage(hooks);
+    if (deferDraw) {
+        coop.screensByFrame = true;
+        cadence = makeFrameCadence({ tickMs: PASS_MS, maxCatchUp: SCREEN_CATCH_UP, start: o.now() });
+        coop.coreMade = (c) => {
+            const core = c as unknown as {
+                setPassCapture?(f: (() => ComposedScreen | null) | null): void;
+            };
+            core.setPassCapture?.(() => (coop.page.core ? realSeatScreen(coop.page.core, coop.page.seat) : null));
+        };
+    }
     function speedOf(): {
         mode: "original" | "custom";
         custom_steps: number;
@@ -141,25 +230,102 @@ export function startCoopLive(o: CoopLiveOptions): CoopLive {
         }
         return scheduler.poll(now) > 0;
     }
+    function between(): void {
+        try {
+            coop.page.between();
+        }
+        catch (err) {
+            stepFailed(err);
+        }
+    }
     function frame(now: number = o.now()): void {
         if (stopped)
             return;
+        between();
         if (due(now))
-            runStep();
+            runStep(now);
     }
     function pump(now: number = o.now()): void {
-        while (!stopped && due(now))
-            runStep();
+        between();
+        const sch = (): SpeedScheduler | null => scheduler;
+        while (!stopped && gate.mayStep(now, sch() !== null ? dueCountOf((n) => sch()!.dueMs(n)) : undefined) && due(now)) {
+            runStep(now);
+            gate.stepped();
+            if (gate.onePerTick)
+                break;
+        }
     }
-    function paint(): void {
+    function screenPasses(now: number): boolean {
+        const n = cadence!.frame(now);
+        if (!coop.preWorld)
+            return false;
+        let ran = false;
+        for (let i = 0; i < n; i++) {
+            const pad = o.menuOpen() ? 0 : o.pad();
+            let done: boolean;
+            try {
+                done = coop.screenPass(pad);
+            }
+            catch (err) {
+                stepFailed(err);
+                return false;
+            }
+            ran = true;
+            if (done)
+                break;
+        }
+        return ran;
+    }
+    let seen = { live: 0, rerun: 0, save: 0, restore: 0, steps: 0 };
+    function reportCoop(now: number): void {
+        const w = motionObserver();
+        if (w === null || w.coopFrame === undefined)
+            return;
+        const p = coop.page;
+        const k = { live: p.liveSteps, rerun: p.rerunSteps, save: p.work.saveMs, restore: p.work.restoreMs, steps: p.work.stepsMs };
+        try {
+            w.coopFrame({ frameTimeMs: now, stepsLive: k.live - seen.live, stepsRerun: k.rerun - seen.rerun, saveMs: k.save - seen.save, restoreMs: k.restore - seen.restore, stepsMs: k.steps - seen.steps, turnsSent: o.turnsSent?.() ?? [], ...(p.core ? realSeatWhere(p.core, p.seat) ?? {} : {}) });
+        }
+        catch { }
+        seen = k;
+    }
+    function paint(now: number = o.now()): void {
+        gate.frame(now);
+        reportCoop(now);
+        if (stopped)
+            return;
+        const passed = cadence !== null ? screenPasses(now) : false;
+        if (stopped)
+            return;
         const d = pendingDraw;
         pendingDraw = null;
-        if (own !== null)
-            o.drawOwn?.(own.picture());
-        else if (d !== null && coop.page.core)
-            o.draw?.(d.seat, d.step, coop.page.core);
-        if (pendingScreen) {
-            pendingScreen = false;
+        let busy = false;
+        if (sched !== null) {
+            const due = Math.min(sched.pics.length - 1, Math.floor((now - sched.t0) / PASS_MS + 1e-9));
+            let i = due;
+            while (i > sched.shown && sched.pics[i] === null)
+                i--;
+            if (i > sched.shown && sched.pics[i] !== null) {
+                sched.shown = i;
+                const pic = sched.pics[i]!;
+                if (own !== null || o.drawComposed === undefined)
+                    o.drawOwn?.(pic);
+                else
+                    o.drawComposed(coop.page.seat, pic);
+                busy = true;
+            }
+            if (due >= sched.pics.length - 1)
+                sched = null;
+            else
+                busy = true;
+        }
+        if (!busy) {
+            if (own !== null)
+                o.drawOwn?.(own.picture());
+            else if (d !== null && coop.page.core)
+                o.draw?.(d.seat, d.step, coop.page.core);
+        }
+        if (passed) {
             const pic = coop.screenPicture();
             if (pic)
                 o.drawScreen?.(pic);
@@ -167,13 +333,13 @@ export function startCoopLive(o: CoopLiveOptions): CoopLive {
     }
     let own: OwnPause | null = null;
     let ownAcc = 0;
-    const playOwn = (es: readonly Effect[]): void => { for (const e of es)
-        o.sound?.(coop.page.seat, e, coop.page.n); };
-    function ownPauseStep(pad: number): void {
+    const playOwn = (es: readonly Effect[]): void => { if (es.length > 0)
+        hand(es, coop.page.n); };
+    function ownPauseStep(pad: number): (ComposedScreen | null)[] | null {
         const core = coop.page.core;
         const hooks = o.ownPause;
         if (!hooks || !core || (coop.page.phase !== "running" && coop.page.phase !== "ended"))
-            return;
+            return null;
         const set = hooks.flag(core, coop.page.seat);
         if (own !== null && !set) {
             playOwn(own.close());
@@ -181,7 +347,7 @@ export function startCoopLive(o: CoopLiveOptions): CoopLive {
             pendingDraw = { seat: coop.page.seat, step: coop.page.n };
             if (!deferDraw && coop.page.core)
                 o.draw?.(coop.page.seat, coop.page.n, coop.page.core);
-            return;
+            return null;
         }
         if (own === null && set) {
             own = hooks.open(core, coop.page.seat);
@@ -191,19 +357,26 @@ export function startCoopLive(o: CoopLiveOptions): CoopLive {
                 if (!deferDraw)
                     o.drawOwn?.(own.picture());
             }
-            return;
+            return null;
         }
         if (own === null)
-            return;
+            return null;
         const sp = speedOf();
         const pace = stepPace(o.consts, sp.mode, sp.custom_steps);
         ownAcc += pace.num;
         const passes = Math.floor(ownAcc / pace.den);
         ownAcc -= passes * pace.den;
-        for (let i = 0; i < passes; i++)
+        const pics: (ComposedScreen | null)[] = [];
+        for (let i = 0; i < passes; i++) {
             playOwn(own.pass(core, pad));
+            if (deferDraw) {
+                const pic = own.picture();
+                pics.push({ width: pic.width, height: pic.height, indices: pic.indices.slice(), cram: [...pic.cram] });
+            }
+        }
         if (!deferDraw)
             o.drawOwn?.(own.picture());
+        return pics.length > 0 ? pics : null;
     }
     function stepFailed(err: unknown): void {
         const text = err instanceof Error ? err.message : String(err);
@@ -223,22 +396,53 @@ export function startCoopLive(o: CoopLiveOptions): CoopLive {
             o.onLine?.(l);
         }
     }
-    function runStep(): void {
-        const pad = o.menuOpen() ? 0 : o.pad();
+    function stepPictures(): (ComposedScreen | null)[] | null | undefined {
+        const core = coop.page.core as unknown as {
+            passPictures?: {
+                stamp: number;
+                pics: (ComposedScreen | null)[];
+            };
+        } | null;
+        const p = core?.passPictures;
+        if (p === undefined)
+            return null;
+        if (p.stamp === lastPassStamp || coop.page.n === lastPassStep)
+            return undefined;
+        lastPassStamp = p.stamp;
+        lastPassStep = coop.page.n;
+        return p.pics.length > 0 ? [...p.pics] : null;
+    }
+    function runStep(stepAt: number): void {
+        let taken: number | null = null;
+        const takePad = (): number => (taken ??= deferDraw && coop.preWorld ? 0 : o.menuOpen() ? 0 : TEST_ONLY_PAD.eager ? eager : o.pad());
+        const eager = TEST_ONLY_PAD.eager && !(deferDraw && coop.preWorld) && !o.menuOpen() ? o.pad() : 0;
+        const sch = scheduler as SpeedScheduler | null;
+        const dueAt = sch !== null ? sch.dueMs(sch.stepsRun - 1) : null;
         try {
-            coop.tick(pad);
+            withFrameClock({ nowMs: stepAt, dueMs: dueAt }, () => coop.tick(takePad));
         }
         catch (err) {
             stepFailed(err);
             return;
         }
         steps++;
-        ownPauseStep(pad);
-        if (deferDraw) {
-            if (coop.page.phase !== "running" && coop.page.phase !== "ended")
-                pendingScreen = true;
+        if (o.gameBlanks && coop.page.phase === "running" && coop.page.core && worldRuns(coop.page.core)) {
+            const sp = speedOf();
+            const pace = stepPace(o.consts, sp.mode, sp.custom_steps);
+            o.gameBlanks(pace.num / pace.den);
         }
-        else {
+        const ownPics = ownPauseStep(own !== null || taken !== null ? takePad() : 0);
+        if (deferDraw) {
+            const fresh = stepPictures();
+            const pics = ownPics ?? fresh;
+            if (pics !== undefined && pics !== null && pics.length > 0) {
+                sched = { t0: stepAt, pics, shown: -1 };
+                pendingDraw = null;
+            }
+            else if (fresh !== undefined || ownPics !== null)
+                sched = null;
+        }
+        if (!deferDraw) {
             const pic = coop.screenPicture();
             if (pic)
                 o.drawScreen?.(pic);
@@ -299,6 +503,13 @@ export function startCoopLive(o: CoopLiveOptions): CoopLive {
         paint,
         get steps() { return steps; },
         line,
+        pingText(): string | null {
+            const p = coop.page;
+            if (p.phase !== "running")
+                return null;
+            const t = p.roundTrips();
+            return pingText(medianMs(t, t.length), o.path?.() ?? "direct");
+        },
         leave(): void { coop.leave(); const l = line(); if (l !== lastLine) {
             lastLine = l;
             o.onLine?.(l);
@@ -328,6 +539,7 @@ interface SeatSession {
         indices: Uint8Array | null;
     } | null;
     readonly choosingSeat?: 0 | 1 | null;
+    seatWaiting?(seat: 0 | 1): boolean;
 }
 export function realSeatScreen(core: NetCore, seat: 0 | 1): ComposedScreen | null {
     const session = (core as unknown as {
@@ -349,15 +561,16 @@ export function realSeatScreen(core: NetCore, seat: 0 | 1): ComposedScreen | nul
 }
 export const realOwnPause: OwnPauseHooks = {
     flag(core: NetCore, seat: 0 | 1): boolean {
-        if (seat !== 1)
-            return false;
         const session = (core as unknown as {
             state?: {
                 session?: OwnPauseSession;
             };
         }).state?.session;
         const seats = session?.run?.state.seats;
-        return seats !== undefined && seats.pause[1] === true && seats.out[1] !== true;
+        if (seats === undefined || seats.out[seat] === true)
+            return false;
+        const f = pauseFlagsOf(seats, seat);
+        return (seat === 1 && f.own) || f.partnerAlone;
     },
     open(core: NetCore, seat: 0 | 1): OwnPause | null {
         const session = (core as unknown as {
@@ -390,7 +603,7 @@ export const realOwnPause: OwnPauseHooks = {
                 const rec = pauseFrameRecord(made.screen);
                 return { width: live.width, height: live.height, indices: rec.indices, cram: [...rec.cram] };
             },
-            close: () => fx([{ type: "Audio.Resume" }]),
+            close: () => (seat === 0 && session.run?.state.seats?.pause[0] === true ? [] : fx([{ type: "Audio.Resume" }])),
         };
     },
 };
@@ -403,6 +616,43 @@ interface OwnPauseSession {
         screen: PauseScreen;
         driver: SoundDriver;
     } | null;
+}
+export function realSeatWhere(core: NetCore, seat: 0 | 1): {
+    episode: number;
+    floor: number;
+    cellX: number;
+    cellY: number;
+} | null {
+    const st = (core as unknown as {
+        state?: {
+            session?: {
+                run?: {
+                    state: TickState;
+                } | null;
+            };
+        };
+    }).state?.session?.run?.state;
+    if (!st)
+        return null;
+    const seats = st.seats;
+    const mine = seats === undefined || seats.live === seat;
+    const pos = mine ? st.world.player.pos : seats!.data.player.pos;
+    const shift = st.env.R.CELL_SHIFT;
+    return { episode: st.world.level.episode.value, floor: mine ? st.floorNumber : seats!.data.floorNumber, cellX: pos.x >> shift, cellY: pos.y >> shift };
+}
+function worldRuns(core: NetCore): boolean {
+    const session = (core as unknown as {
+        state?: {
+            session?: {
+                stage?: unknown;
+                run?: {
+                    state: TickState;
+                } | null;
+            };
+        };
+    }).state?.session;
+    const seats = session?.run?.state.seats;
+    return session?.stage === "play" && !(seats?.pause[0] === true || seats?.pause[1] === true);
 }
 export function realGameOver(core: NetCore): boolean {
     const session = (core as unknown as {
@@ -426,7 +676,7 @@ export function realPartnerInfo(core: NetCore, seat: 0 | 1): PartnerInfo | null 
     if (!st || !seats)
         return null;
     const partner: 0 | 1 = seat === 0 ? 1 : 0;
-    return { hp: (seat === 0 ? seats.data.player : st.world.player).hp, choosing: session?.choosingSeat === partner };
+    return { hp: (seat === 0 ? seats.data.player : st.world.player).hp, choosing: session?.choosingSeat === partner, ...(pauseFlagsOf(seats, seat).partnerAlone ? { paused: true } : {}), ...(session?.seatWaiting?.(seat) === true ? { waiting: true } : {}) };
 }
 export function paintScreen(ctx: {
     canvas: {

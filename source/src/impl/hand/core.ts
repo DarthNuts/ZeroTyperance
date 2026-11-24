@@ -1,6 +1,7 @@
 import type { ScreenDisplay } from "../screen_types.js";
 import type { GunRow, HandConstants } from "./constants.js";
 import type { HandAssets, HandGraphic, HandInputs, HandPicture, HandSprite, HandState } from "./types.js";
+import { GLOW, glowSprite, type GlowView } from "./glow.js";
 const CRAM_LINE_ENTRIES = 16;
 const CRAM_ENTRIES = 64;
 const TILE_BYTES = 32;
@@ -29,7 +30,7 @@ function partOf(g: HandGraphic, name: string) {
         throw new Error(`hand: graphic ${g.name} has no ${name} part`);
     return p;
 }
-export function handIteration(state: HandState, line: HandInputs, prev: HandInputs, assets: HandAssets, C: HandConstants): void {
+export function handIteration(state: HandState, line: HandInputs, prev: HandInputs, assets: HandAssets, C: HandConstants, view: GlowView | null = null): void {
     const list: HandSprite[] = [];
     state.list = list;
     const cur = line.current;
@@ -88,6 +89,11 @@ export function handIteration(state: HandState, line: HandInputs, prev: HandInpu
             const fx = partOf(g, PART_EFFECT);
             list.push({ xWord: x + gun.flash_dx, yWord: y + gun.flash_dy, w: fx.w, h: fx.h, attr: fx.attrWord });
         }
+        if (view !== null && gunName === GLOW.GRAPHIC) {
+            const glow = glowSprite(view, a, f, C);
+            if (glow !== null)
+                list.push(glow);
+        }
         return;
     }
     if (C.FISTS.includes(cur)) {
@@ -132,7 +138,7 @@ export function handIteration(state: HandState, line: HandInputs, prev: HandInpu
     }
     throw new Error(`hand: weapon ${cur} has no picture rule`);
 }
-export function handRecordStart(state: HandState, line: HandInputs, assets: HandAssets, C: HandConstants): void {
+export function handRecordStart(state: HandState, line: HandInputs, assets: HandAssets, C: HandConstants, view: GlowView | null = null): void {
     const name = assets.graphicOfWeapon.get(line.current);
     if (name === undefined)
         return;
@@ -146,7 +152,7 @@ export function handRecordStart(state: HandState, line: HandInputs, assets: Hand
         if (row)
             load(state, prevAnim === C.RESTORE_AT ? name : row.art, assets, C);
     }
-    handIteration(state, rest, { ...rest, anim: prevAnim }, assets, C);
+    handIteration(state, rest, { ...rest, anim: prevAnim }, assets, C, view);
 }
 export function handPicture(state: HandState, assets: HandAssets, C: HandConstants): HandPicture {
     const blank = (): number[][] => Array.from({ length: C.VIEW_ROWS }, () => new Array<number>(C.VIEW_COLS).fill(0));

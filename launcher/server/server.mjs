@@ -1,4 +1,5 @@
-// zt-coop server, protocol version 1: the page files, room signalling, a relay and STUN on one port, plus LAN room
+// zt-coop server, protocol version 2 (room names; the room list never shows codes; protocol-1 pages are still served,
+// seeing protocol-1 rooms only): the page files, room signalling, a relay and STUN on one port, plus LAN room
 // announcements. Node >= 18, node: built-ins only.
 import http from 'node:http';
 import https from 'node:https';
@@ -16,6 +17,8 @@ export const MAX_FRAME = 1024 * 1024;
 export const SERVER_PATH = '/coop';
 export const ROM_PATH = '/rom.bin'; // the page's APP.ROM.BUNDLED, relative to a page served at /
 export const ROOM_LIST_MAX = 16;
+export const ROOM_NAME_MAX = 24;
+export const ROOM_NAME_DEFAULT = 'Zero Tolerance';
 export const LAN_PORT = 47811;
 export const LAN_ANNOUNCE_MS = 1000;
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
@@ -29,6 +32,14 @@ export function generateRoomCode(len = ROOM_CODE_LEN, randomInt = crypto.randomI
   let s = '';
   for (let i = 0; i < len; i++) s += ROOM_CODE_ALPHABET[randomInt(ROOM_CODE_ALPHABET.length)];
   return s;
+}
+
+// A room name as the server keeps it: control characters (U+0000-U+001F, U+007F-U+009F) removed, spaces trimmed at
+// both ends, at most ROOM_NAME_MAX code points; empty or not a string -> the default name.
+export function cleanRoomName(x) {
+  if (typeof x !== 'string') return ROOM_NAME_DEFAULT;
+  const s = Array.from(x.replace(/[\u0000-\u001f\u007f-\u009f]/g, '').replace(/^ +| +$/g, '')).slice(0, ROOM_NAME_MAX).join('').replace(/ +$/, '');
+  return s === '' ? ROOM_NAME_DEFAULT : s;
 }
 
 export function ipv6ToBytes(addr) {
@@ -335,25 +346,36 @@ export async function startServer(userCfg = {}, opts = {}) {
     for (const [id, v] of lanSeen) if (now - v.at > 3 * LAN_ANNOUNCE_MS) lanSeen.delete(id);
     return [...lanSeen.values()];
   };
-  const lanFind = (code) => {
-    for (const v of lanServers()) if (v.rooms.some((r) => r.code.toUpperCase() === code)) return v;
+  const lanFind = (id) => {
+    for (const v of lanServers()) if (v.rooms.some((r) => r.id === id)) return v;
     return null;
   };
+  const roomById = (id) => { for (const r of rooms.values()) if (r.id === id) return r; return null; };
+  const newRoomId = () => { let id; do id = crypto.randomBytes(6).toString('hex'); while (roomById(id)); return id; };
+  const hostName = () => cleanRoomName(opts.hostname ?? os.hostname()); // opts.hostname: test hook
   // A player's own program lists every open room, and the rooms its LAN announces, to askers on a private network
   // (the LAN, this computer) only; an asker from a public address (a port-forwarded host reached over the internet)
   // sees the same-network rooms only, so it cannot read the host's room codes off the list: it types the code.
-  const roomList = (c) => {
+  // proto 1: the old form {code, where, age_s} over protocol-1 rooms (no LAN: v1 announcements ended); proto 2:
+  // {id, name, where, age_s} over protocol-2 rooms, never a code.
+  const roomList = (c, proto = 1) => {
     const now = Date.now();
     const asker = opts.askerIp || c.ip; // opts.askerIp: test hook, inert unset
     const local = isPrivateIp(asker);
     const own = [...rooms.values()]
-      .filter((r) => !r.seats[1] && r.seats[0] && ((listAll && (local || listAllPublic)) || sameNetwork(r.seats[0].ip, asker)))
+      .filter((r) => r.proto === proto && !r.seats[1] && r.seats[0] && ((listAll && (local || listAllPublic)) || sameNetwork(r.seats[0].ip, asker)))
       .sort((x, y) => y.created - x.created)
-      .map((r) => ({ code: r.code, where: '', age_s: Math.floor((now - r.created) / 1000) }));
+      .map((r) => {
+        const age_s = Math.floor((now - r.created) / 1000);
+        if (proto === 1) return { code: r.code, where: '', age_s };
+        const o = { id: r.id, name: r.name, where: '', age_s };
+        if (testBreak === 'code') o.code = r.code; // test-only: a code in a protocol-2 room list
+        return o;
+      });
     const far = [];
-    if (local) {
+    if (local && proto === 2) {
       for (const v of lanServers()) {
-        for (const r of v.rooms) far.push({ code: r.code, where: v.name || v.address, age_s: r.age_s + Math.floor((now - v.at) / 1000) });
+        for (const r of v.rooms) far.push({ id: r.id, name: r.name, where: v.name || v.address, age_s: r.age_s + Math.floor((now - v.at) / 1000) });
       }
     }
     return own.concat(far).slice(0, ROOM_LIST_MAX);
@@ -443,14 +465,14 @@ export async function startServer(userCfg = {}, opts = {}) {
       case 'host': {
         if (c.room || c.dead) return fail(c, 'bad_message');
         if (o.proto === undefined) return fail(c, 'bad_message');
-        if (o.proto !== 1) return fail(c, 'proto');
+        if (o.proto !== 1 && o.proto !== 2) return fail(c, 'proto');
         if (rooms.size >= cfg.maxRooms) return fail(c, 'server_full');
         let code;
         do code = generateRoomCode(); while (rooms.has(code));
-        const room = { code, seats: [c, null], idle: null, created: Date.now() };
+        const room = { code, id: newRoomId(), name: o.proto === 2 ? cleanRoomName(o.name) : '', proto: o.proto, seats: [c, null], idle: null, created: Date.now() };
         rooms.set(code, room); c.room = room; c.seat = 0;
         armIdle(room);
-        const ans = { t: 'room', code, seat: 0 };
+        const ans = o.proto === 2 ? { t: 'room', id: room.id, code, name: room.name, seat: 0 } : { t: 'room', code, seat: 0 };
         if (cfg.site) ans.urls = ownUrls(); // a player's own program names the addresses a partner opens
         send(c, ans);
         emit('room_open', code, c.ip);
@@ -459,18 +481,28 @@ export async function startServer(userCfg = {}, opts = {}) {
       case 'join': {
         if (c.room || c.dead) return fail(c, 'bad_message');
         if (o.proto === undefined || typeof o.code !== 'string') return fail(c, 'bad_message');
-        if (o.proto !== 1) return fail(c, 'proto');
-        const room = rooms.get(o.code.toUpperCase());
-        if (!room) {
-          const ann = cfg.lan && testBreak !== 'lan' ? lanFind(o.code.toUpperCase()) : null;
-          if (!ann) return fail(c, 'no_room');
-          emit('bridge', o.code.toUpperCase(), c.ip);
-          return openBridge(c, text, ann);
+        if (o.proto !== 1 && o.proto !== 2) return fail(c, 'proto');
+        const code = o.code.toUpperCase();
+        let room;
+        if (o.proto === 2 && o.room !== undefined) {
+          if (typeof o.room !== 'string') return fail(c, 'bad_message');
+          room = roomById(o.room);
+          if (room && room.proto !== 2) room = null;
+          if (!room) {
+            const ann = cfg.lan && testBreak !== 'lan' ? lanFind(o.room) : null;
+            if (!ann) return fail(c, 'no_room');
+            emit('bridge', '-', c.ip);
+            return openBridge(c, text, ann);
+          }
+          if (room.code !== code) return fail(c, 'wrong_code');
+        } else {
+          room = rooms.get(code);
+          if (!room || room.proto !== o.proto) return fail(c, 'no_room');
         }
         if (room.seats[1]) return fail(c, 'room_full');
         room.seats[1] = c; c.room = room; c.seat = 1;
         clearTimeout(room.idle);
-        send(c, { t: 'joined', code: room.code, seat: 1 });
+        send(c, o.proto === 2 ? { t: 'joined', code: room.code, name: room.name, seat: 1 } : { t: 'joined', code: room.code, seat: 1 });
         send(room.seats[0], { t: 'peer', seat: 1 });
         emit('join', room.code, c.ip);
         return;
@@ -493,7 +525,11 @@ export async function startServer(userCfg = {}, opts = {}) {
         return;
       }
       case 'rooms':
-        send(c, { t: 'rooms', rooms: roomList(c) });
+        if (o.proto !== undefined && o.proto !== 1 && o.proto !== 2) return fail(c, 'proto');
+        send(c, { t: 'rooms', rooms: roomList(c, o.proto === 2 ? 2 : 1) });
+        return;
+      case 'info':
+        send(c, { t: 'info', proto: 2, computer: cfg.site ? hostName() : '' });
         return;
       case 'leave':
         leaveRoom(c, 'leave');
@@ -708,8 +744,8 @@ export async function startServer(userCfg = {}, opts = {}) {
     const announce = () => {
       const now = Date.now();
       const body = Buffer.from(JSON.stringify({
-        t: 'zt-coop', proto: 1, id: lanId, name: os.hostname(), port,
-        rooms: [...rooms.values()].filter((r) => !r.seats[1]).map((r) => ({ code: r.code, age_s: Math.floor((now - r.created) / 1000) })),
+        t: 'zt-coop', proto: 2, id: lanId, name: os.hostname(), port,
+        rooms: [...rooms.values()].filter((r) => r.proto === 2 && !r.seats[1]).map((r) => ({ id: r.id, name: r.name, age_s: Math.floor((now - r.created) / 1000) })),
       }));
       for (const t of targets()) { try { lanSock.send(body, t.port, t.address, () => {}); } catch {} }
     };
@@ -721,10 +757,10 @@ export async function startServer(userCfg = {}, opts = {}) {
           if (testBreak === 'lan') return;
           let o;
           try { o = JSON.parse(msg.toString()); } catch { return; }
-          if (!o || o.t !== 'zt-coop' || typeof o.id !== 'string' || o.id === lanId) return;
+          if (!o || o.t !== 'zt-coop' || o.proto !== 2 || typeof o.id !== 'string' || o.id === lanId) return;
           if (!Number.isInteger(o.port) || o.port < 1 || o.port > 65535 || !Array.isArray(o.rooms)) return;
-          const rs = o.rooms.filter((r) => r && typeof r.code === 'string' && r.code.length <= 16)
-            .map((r) => ({ code: r.code, age_s: Number.isFinite(r.age_s) ? Math.max(0, Math.floor(r.age_s)) : 0 })).slice(0, ROOM_LIST_MAX);
+          const rs = o.rooms.filter((r) => r && typeof r.id === 'string' && r.id.length <= 32)
+            .map((r) => ({ id: r.id, name: cleanRoomName(r.name), age_s: Number.isFinite(r.age_s) ? Math.max(0, Math.floor(r.age_s)) : 0 })).slice(0, ROOM_LIST_MAX);
           lanSeen.set(o.id, { at: Date.now(), address: normalizeIp(rinfo.address), name: typeof o.name === 'string' ? o.name.slice(0, 64) : '', port: o.port, rooms: rs });
         });
         s.bind({ port: cfg.lanPort, address: '0.0.0.0' }, () => { s.off('error', rej); s.on('error', () => {}); try { s.setBroadcast(true); } catch {} res(s); });

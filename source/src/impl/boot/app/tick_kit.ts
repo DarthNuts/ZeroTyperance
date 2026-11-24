@@ -178,6 +178,8 @@ export interface AttractKit {
         readonly entryBlanks: number;
         readonly exitBlanks: number;
     } | null;
+    readonly hdData?: unknown;
+    readonly viewData?: unknown;
 }
 export function tickEnvsFrom(b: TickBundle): TickEnv[] {
     const M = moveConstantsFrom(b.data.move);
@@ -305,6 +307,8 @@ export async function loadAttractKit(fetchJson: (url: string) => Promise<unknown
         viewY0: HC.RECORD.VIEW_RECT_ROW_FIRST * TILE_SIZE,
         notes: b.notes,
         pauseExit: b.pauseExit,
+        hdData: b.data.hd,
+        viewData: b.data.view,
     };
 }
 export function attachDeathScreens(tickKit: AttractKit, charsel: TickEnv["charsel"], briefing: TickEnv["briefing"]): void {

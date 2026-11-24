@@ -70,6 +70,10 @@ export interface ViewRecord {
     readonly events: readonly SpriteEvent[];
     readonly spawned: readonly EntityRecord[];
 }
+export type ColumnObserver = (column: number, wrapped: boolean) => void;
+export const REND_OBSERVE: {
+    column: ColumnObserver | null;
+} = { column: null };
 interface WriteResult {
     readonly drawn: boolean;
     readonly hr: number;
@@ -172,6 +176,7 @@ class Frame {
     }
     render(pose: Pose): void {
         const C = this.C;
+        REND_OBSERVE.column?.(-1, false);
         const a = mod(pose.angle, C.ANGLES);
         this.eye = s16(pose.eye ?? 0);
         this.slide = s16(pose.liftHeight ?? 0);
@@ -620,37 +625,7 @@ class Frame {
         this.drawFace(cellX, cellY, face, my);
     }
     private rampWordOf(cls: number, face: Face, dx: number, dy: number): RampWord | null {
-        const R = this.C.RAMP;
-        if (!R.HIT_CLASSES.includes(cls))
-            return null;
-        const idx = face === FACE_LOW_Y ? R.FACE_INDEX.low_y : face === FACE_HIGH_Y ? R.FACE_INDEX.high_y : face === FACE_HIGH_X ? R.FACE_INDEX.high_x : R.FACE_INDEX.low_x;
-        let w: RampWord;
-        if (cls === R.LIFT_CLASS) {
-            const b = s8((this.slide & 255) | 1);
-            w = { hi: b, lo: b };
-        }
-        else {
-            const arms = R.ARMS.get(cls);
-            if (!arms)
-                return null;
-            let words;
-            if (this.slide > 0)
-                words = arms.pos;
-            else if (this.slide < 0)
-                words = arms.neg;
-            else if (Array.isArray(arms.zero))
-                words = arms.zero;
-            else {
-                const z = arms.zero as {
-                    axis: "dx" | "dy";
-                    then: typeof arms.pos;
-                    else: typeof arms.pos;
-                };
-                words = (z.axis === "dx" ? dx : dy) < 0 ? z.then : z.else;
-            }
-            w = (words as readonly RampWord[])[idx]!;
-        }
-        return w.hi === 0 && w.lo === 0 ? null : w;
+        return rampWordFor(this.C, cls, face, dx, dy, this.slide);
     }
     private cornerWords(cellX: number, my: number): {
         X: number;
@@ -909,6 +884,7 @@ class Frame {
                 this.face[col] = picture.face;
                 this.cell[col] = picture.cell;
                 this.word[col] = picture.word;
+                REND_OBSERVE.column?.(col, q === null);
                 if (tex)
                     this.drawColumn(col, candidate, picture.word, picture.slotBase, tex.pair, tex.column, ramp ? rAcc : null);
             }
@@ -1124,6 +1100,39 @@ class TexturePosition {
             }
         }
     }
+}
+export function rampWordFor(C: RendConstants, cls: number, face: Face, dx: number, dy: number, slide: number): RampWord | null {
+    const R = C.RAMP;
+    if (!R.HIT_CLASSES.includes(cls))
+        return null;
+    const idx = face === FACE_LOW_Y ? R.FACE_INDEX.low_y : face === FACE_HIGH_Y ? R.FACE_INDEX.high_y : face === FACE_HIGH_X ? R.FACE_INDEX.high_x : R.FACE_INDEX.low_x;
+    let w: RampWord;
+    if (cls === R.LIFT_CLASS) {
+        const b = s8((slide & 255) | 1);
+        w = { hi: b, lo: b };
+    }
+    else {
+        const arms = R.ARMS.get(cls);
+        if (!arms)
+            return null;
+        let words;
+        if (slide > 0)
+            words = arms.pos;
+        else if (slide < 0)
+            words = arms.neg;
+        else if (Array.isArray(arms.zero))
+            words = arms.zero;
+        else {
+            const z = arms.zero as {
+                axis: "dx" | "dy";
+                then: typeof arms.pos;
+                else: typeof arms.pos;
+            };
+            words = (z.axis === "dx" ? dx : dy) < 0 ? z.then : z.else;
+        }
+        w = (words as readonly RampWord[])[idx]!;
+    }
+    return w.hi === 0 && w.lo === 0 ? null : w;
 }
 export const REND_TRACE: {
     on: boolean;

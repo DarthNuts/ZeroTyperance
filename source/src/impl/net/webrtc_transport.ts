@@ -54,6 +54,7 @@ export function openSessionTransport(client: ServerClient, seat: 0 | 1, iceServe
         const agree = new PathAgreement();
         let chain: Promise<void> = Promise.resolve();
         const inbox: string[] = [];
+        let arrival: (() => void) | null = null;
         const chans: {
             r?: RTCDataChannel;
             u?: RTCDataChannel;
@@ -83,6 +84,8 @@ export function openSessionTransport(client: ServerClient, seat: 0 | 1, iceServe
             const t: Transport & {
                 close(): void;
             } = {
+                get onArrival() { return arrival; },
+                set onArrival(f) { arrival = f; },
                 send(channel: ChannelName, text: string): void {
                     const dc = channel === "reliable" ? chans.r : chans.u;
                     if (dc && dc.readyState === "open")
@@ -113,8 +116,10 @@ export function openSessionTransport(client: ServerClient, seat: 0 | 1, iceServe
         const conn = pc;
         const wire = (name: "r" | "u", dc: RTCDataChannel): void => {
             chans[name] = dc;
-            dc.onmessage = (ev: MessageEvent) => { if (typeof ev.data === "string")
-                inbox.push(ev.data); };
+            dc.onmessage = (ev: MessageEvent) => { if (typeof ev.data === "string") {
+                inbox.push(ev.data);
+                arrival?.();
+            } };
             dc.onopen = () => {
                 if (chans.r?.readyState === "open" && chans.u?.readyState === "open" && agree.decision() === null) {
                     agree.localOpened();

@@ -1,3 +1,4 @@
+import type { Place } from "../coop/place.js";
 import { parseSoundTable } from "../options/sound_table.js";
 import type { SoundRow, SoundTable } from "../options/sound_table.js";
 export type { SoundRow, SoundTable };
@@ -19,6 +20,11 @@ export function soundTableFrom(doc: unknown): SoundTable {
 }
 export type SoundEvent = SoundEventBody & {
     readonly seat?: SoundSeat;
+    readonly place?: Place;
+    readonly phrase?: {
+        readonly key: string;
+        readonly first: boolean;
+    };
 };
 type SoundEventBody = {
     readonly type: "Audio.Request";
@@ -113,6 +119,10 @@ export function soundRequest(driver: SoundDriver, table: SoundTable, n: number, 
             throw new Error(`sound request ${n}: the row's mode ${row.mode} is none of ZT-AUDIO 2a's four`);
     }
 }
+export function isVoiceMessage(table: SoundTable, n: number): boolean {
+    const row = table.rows[n];
+    return row !== undefined && row.mode === AUDIO.MODE_VOICE_UNGATED;
+}
 function acceptedBy(row: SoundRow, g: SoundGates): boolean {
     switch (row.mode) {
         case AUDIO.MODE_MUSIC:
@@ -153,7 +163,7 @@ export function comparedSounds(events: ReadonlyArray<{
         if (e.type === "Audio.Request")
             requests.push(Number(e.request));
         else if (e.type === "Audio.PlayMusic" || e.type === "Audio.PlaySfx" || e.type === "Audio.PlayVoice") {
-            const keys = Object.keys(e).filter((k) => k !== "channel" && k !== "tick" && k !== "outcome").sort();
+            const keys = Object.keys(e).filter((k) => k !== "channel" && k !== "tick" && k !== "outcome" && k !== "phrase").sort();
             plays.push("{" + keys.map((k) => `${JSON.stringify(k)}:${JSON.stringify(e[k])}`).join(",") + "}");
         }
         else if (e.type === "Audio.Pause" || e.type === "Audio.Resume")

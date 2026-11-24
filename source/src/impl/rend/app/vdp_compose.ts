@@ -31,7 +31,12 @@ export interface VdpInput {
     readonly sprites: readonly VdpSprite[];
     readonly maxSpritesPerLine: number;
     readonly maxSpritePixelsPerLine: number;
+    readonly spriteInfo?: Uint16Array;
+    readonly skipSpritePixel?: (priority: boolean, tileIndex: number) => boolean;
 }
+export const SPRITE_INFO_PRESENT = 1 << 12;
+export const SPRITE_INFO_PRIORITY = 1 << 11;
+export const SPRITE_INFO_TILE_MASK = 0x7ff;
 const TILE_PX = 8;
 const TILE_ROW_BYTES = 4;
 const TILE_MASK = 0x7ff;
@@ -48,7 +53,7 @@ function tilePx(tile: Uint8Array, px: number, py: number): number {
 function mod(a: number, n: number): number {
     return ((a % n) + n) % n;
 }
-function planePixel(p: VdpPlane, x: number, y: number, prioOut: Uint8Array): number {
+export function planePixel(p: VdpPlane, x: number, y: number, prioOut: Uint8Array): number {
     const px = mod(x - p.hscroll, p.cols * TILE_PX);
     const py = mod(y + p.vscroll, p.rows * TILE_PX);
     const word = p.words[(py >> 3) * p.cols + (px >> 3)] ?? 0;
@@ -67,13 +72,74 @@ function planePixel(p: VdpPlane, x: number, y: number, prioOut: Uint8Array): num
     prioOut[0] = (word & PRIO) !== 0 ? 1 : 0;
     return ((word >> 13) & 3) * 16 + c;
 }
+function cachedSource(src: TileSource, caches: Map<TileSource, TileSource>): TileSource {
+    let c = caches.get(src);
+    if (c === undefined) {
+        const memo = new Map<number, Uint8Array | undefined>();
+        c = (i: number): Uint8Array | undefined => {
+            if (memo.has(i))
+                return memo.get(i);
+            const t = src(i);
+            memo.set(i, t);
+            return t;
+        };
+        caches.set(src, c);
+    }
+    return c;
+}
+function planeLine(p: VdpPlane, tile: TileSource, y: number, width: number, val: Uint8Array, prio: Uint8Array): void {
+    const wpx = p.cols * TILE_PX;
+    const py = mod(y + p.vscroll, p.rows * TILE_PX);
+    const rowBase = (py >> 3) * p.cols;
+    let px = mod(-p.hscroll, wpx);
+    let cell = -1;
+    let t: Uint8Array | undefined;
+    let word = 0;
+    let ty = 0;
+    for (let x = 0; x < width; x++) {
+        const cx = px >> 3;
+        if (cx !== cell) {
+            cell = cx;
+            word = p.words[rowBase + cx] ?? 0;
+            t = tile(word & TILE_MASK);
+            ty = (word & VFLIP) !== 0 ? 7 - (py & 7) : py & 7;
+        }
+        let v = 0;
+        let pb = 0;
+        if (t !== undefined) {
+            const tx = (word & HFLIP) !== 0 ? 7 - (px & 7) : px & 7;
+            const c = tilePx(t, tx, ty);
+            if (c !== 0) {
+                v = ((word >> 13) & 3) * 16 + c;
+                pb = (word & PRIO) !== 0 ? 1 : 0;
+            }
+        }
+        val[x] = v;
+        prio[x] = pb;
+        px++;
+        if (px >= wpx)
+            px = 0;
+    }
+}
 export function composeVdp(input: VdpInput, into?: Uint8Array): Uint8Array {
     const { width, height } = input;
     const out = into !== undefined && into.length === width * height ? into : new Uint8Array(width * height);
     out.fill(0);
     const spPix = new Uint8Array(width);
     const spPrio = new Uint8Array(width);
-    const pr = new Uint8Array(1);
+    const spTile = new Uint16Array(width);
+    const info = input.spriteInfo !== undefined && input.spriteInfo.length === width * height ? input.spriteInfo : null;
+    if (info !== null)
+        info.fill(0);
+    const caches = new Map<TileSource, TileSource>();
+    const planeA = input.planeA;
+    const planeB = input.planeB;
+    const tileA = planeA !== null ? cachedSource(planeA.tile, caches) : null;
+    const tileB = planeB !== null ? cachedSource(planeB.tile, caches) : null;
+    const aVal = new Uint8Array(width);
+    const aPri = new Uint8Array(width);
+    const bVal = new Uint8Array(width);
+    const bPri = new Uint8Array(width);
     const sprites = input.sprites;
     const n = sprites.length;
     const sx = new Array<number>(n);
@@ -84,6 +150,7 @@ export function composeVdp(input: VdpInput, into?: Uint8Array): Uint8Array {
         sy[k] = (s.yWord & Y_WORD_MASK) - SPRITE_ORIGIN;
     }
     const ov = input.overlayB;
+    const skip = input.skipSpritePixel;
     for (let y = 0; y < height; y++) {
         spPix.fill(0);
         let any = false;
@@ -122,27 +189,35 @@ export function composeVdp(input: VdpInput, into?: Uint8Array): Uint8Array {
                 if (x < 0 || x >= width || spPix[x] !== 0)
                     continue;
                 const cx = hf ? s.wCells - 1 - (dx >> 3) : dx >> 3;
-                const tile = s.tile((first + cx * s.hCells + cy) & TILE_MASK);
+                const tileIndex = (first + cx * s.hCells + cy) & TILE_MASK;
+                const tile = cachedSource(s.tile, caches)(tileIndex);
                 if (tile === undefined)
                     continue;
                 const c = tilePx(tile, hf ? 7 - (dx & 7) : dx & 7, ty);
                 if (c === 0)
                     continue;
+                if (skip !== undefined && skip(prio === 1, tileIndex))
+                    continue;
                 spPix[x] = line + c;
                 spPrio[x] = prio;
+                spTile[x] = tileIndex;
                 any = true;
             }
         }
+        if (planeA !== null)
+            planeLine(planeA, tileA!, y, width, aVal, aPri);
+        if (planeB !== null)
+            planeLine(planeB, tileB!, y, width, bVal, bPri);
         for (let x = 0; x < width; x++) {
             const sp = any ? spPix[x]! : 0;
+            if (info !== null && sp !== 0)
+                info[y * width + x] = SPRITE_INFO_PRESENT | (spPrio[x] === 1 ? SPRITE_INFO_PRIORITY : 0) | spTile[x]!;
             if (sp !== 0 && spPrio[x] === 1) {
                 out[y * width + x] = sp;
                 continue;
             }
-            pr[0] = 0;
-            const a = input.planeA !== null ? planePixel(input.planeA, x, y, pr) : 0;
-            const aPrio = pr[0] === 1;
-            pr[0] = 0;
+            const a = planeA !== null ? aVal[x]! : 0;
+            const aPrio = planeA !== null && a !== 0 && aPri[x] === 1;
             let b = 0;
             let bPrio = false;
             if (ov !== null && x >= ov.x0 && x < ov.x0 + ov.width && y >= ov.y0 && y < ov.y0 + ov.height) {
@@ -152,9 +227,9 @@ export function composeVdp(input: VdpInput, into?: Uint8Array): Uint8Array {
                     bPrio = true;
                 }
             }
-            if (b === 0 && input.planeB !== null) {
-                b = planePixel(input.planeB, x, y, pr);
-                bPrio = pr[0] === 1;
+            if (b === 0 && planeB !== null) {
+                b = bVal[x]!;
+                bPrio = b !== 0 && bPri[x] === 1;
             }
             let v = 0;
             if (a !== 0 && aPrio)

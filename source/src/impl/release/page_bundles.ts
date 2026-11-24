@@ -74,6 +74,14 @@ const optionalJson = (src: PackSource, path: string): unknown => {
     const t = src.text(path);
     return t === null ? null : (JSON.parse(t) as unknown);
 };
+const optionalData = (src: PackSource, name: string): unknown => {
+    try {
+        return src.data(name);
+    }
+    catch {
+        return undefined;
+    }
+};
 function rendBundle(src: PackSource): RendBundle {
     const { C, dataDoc, trigDoc } = loadRendEnvironmentFrom(src);
     const floor = loadFloorFrom(src, REND_EPISODE, REND_FLOOR, C);
@@ -163,6 +171,8 @@ function tickBundle(src: PackSource, tick: TickFixtures): TickBundle {
             sprite: spriteEnv.spriteDoc,
             soldier: spriteEnv.soldierDoc,
             sky: skyEnv.dataDoc,
+            hd: optionalData(src, "rend_hd"),
+            view: optionalData(src, "rend_view"),
             hit: d("player_hit"),
             pickup: d("pickup"),
             items: d("items"),

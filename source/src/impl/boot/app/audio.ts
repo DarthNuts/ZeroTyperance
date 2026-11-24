@@ -1,4 +1,8 @@
 /// <reference lib="dom" />
+import { getPlaceConstants, placeFrom, placedGainPan } from "../../coop/place.js";
+import { VoiceLimiter } from "./voice_limit.js";
+import type { PhraseTag, VoiceMode } from "./voice_limit.js";
+import type { Place, PlaceConstants } from "../../coop/place.js";
 const MANIFEST_URL = "/audio/manifest.json";
 const MANIFEST_FORMAT = "ztassets-audio/1";
 const MUSIC_CHANNEL = "music";
@@ -28,6 +32,13 @@ export interface AudioRequest {
     note?: unknown;
     param?: unknown;
     on?: unknown;
+    place?: unknown;
+    phrase?: unknown;
+    src?: unknown;
+}
+export interface SessionAudio {
+    readonly seat: 0 | 1;
+    readonly voices: number;
 }
 export function soundName(soundNumber: number): string {
     return soundNumber.toString(16).toUpperCase().padStart(2, "0");
@@ -45,6 +56,9 @@ export class AudioEngine {
     private context: AudioContext | null = null;
     private master: GainNode | null = null;
     private level = 1;
+    readonly voice = new VoiceLimiter();
+    setVoiceLimit(mode: VoiceMode, intervalSec: number): void { this.voice.set(mode, intervalSec); }
+    gameBlanks(n: number): void { this.voice.advance(n); }
     setLevel(level: number): void {
         this.level = Math.min(1, Math.max(0, level));
         if (this.master)
@@ -177,6 +191,7 @@ export class AudioEngine {
     }
     private stopChannel(channel: string): void {
         this.serial.set(channel, (this.serial.get(channel) ?? 0) + 1);
+        this.ranks.delete(channel);
         if (channel === MUSIC_CHANNEL)
             this.music = null;
         const src = this.playing.get(channel);
@@ -189,8 +204,65 @@ export class AudioEngine {
         catch {
         }
     }
+    private session: SessionAudio | null = null;
+    private readonly ranks = new Map<string, number>();
+    setSession(s: SessionAudio | null): void {
+        this.session = s;
+        this.ranks.clear();
+    }
+    beginSession(s: SessionAudio): void {
+        this.stopAll();
+        this.setSession(s);
+        this.unpause();
+    }
+    endSession(held: boolean): void {
+        this.stopAll();
+        this.setSession(null);
+        if (held)
+            this.pause();
+    }
+    private channelOf(e: AudioRequest): string {
+        if (this.session === null)
+            return String(e.channel);
+        return `${typeof e.src === "string" ? e.src : "none"}|${String(e.channel)}`;
+    }
+    private rankOf(e: AudioRequest): number {
+        const s = this.session!;
+        if (typeof e.src !== "string" || e.src === `p${s.seat}`)
+            return Number.POSITIVE_INFINITY;
+        return -(placeFrom(e.place)?.d ?? 0);
+    }
+    private makeRoom(channel: string, e: AudioRequest, what: string): number | null {
+        const s = this.session;
+        if (s === null)
+            return 0;
+        const rank = this.rankOf(e);
+        if (!this.ranks.has(channel) && this.ranks.size >= s.voices) {
+            let low: string | null = null;
+            let lowRank = Number.POSITIVE_INFINITY;
+            for (const [k, r] of this.ranks)
+                if (low === null || r < lowRank) {
+                    low = k;
+                    lowRank = r;
+                }
+            if (lowRank > rank) {
+                this.played(`sound: ${what} dropped (${s.voices} sounding, each outranks it)`);
+                return null;
+            }
+            this.stopChannel(low!);
+        }
+        return rank;
+    }
+    private playVoice(ch: string, e: AudioRequest, name: string, what: string): void {
+        const rank = this.makeRoom(ch, e, what);
+        if (rank === null)
+            return;
+        this.play(ch, name, false, what, 0, placeFrom(e.place));
+        if (this.session !== null)
+            this.ranks.set(ch, rank);
+    }
     stopAll(): void {
-        for (const ch of [...this.playing.keys(), MUSIC_CHANNEL])
+        for (const ch of [...this.playing.keys(), ...this.ranks.keys(), MUSIC_CHANNEL])
             this.stopChannel(ch);
         this.pendingMusicVar = null;
         this.music = null;
@@ -234,7 +306,7 @@ export class AudioEngine {
         if (p !== null)
             this.play(MUSIC_CHANNEL, p.name, true, `music resumed (${p.name})`, p.offset);
     }
-    private play(channel: string, name: string, loop: boolean, what: string, offset = 0): void {
+    private play(channel: string, name: string, loop: boolean, what: string, offset = 0, place?: Place): void {
         if (this.paused && channel === MUSIC_CHANNEL) {
             this.pausedMusic = { name, offset: 0 };
             this.music = null;
@@ -256,10 +328,12 @@ export class AudioEngine {
             const src = ctx.createBufferSource();
             src.buffer = buffer;
             src.loop = loop;
-            src.connect(this.output(ctx));
+            this.connectPlaced(ctx, src, place);
             src.onended = () => {
-                if (this.playing.get(channel) === src)
+                if (this.playing.get(channel) === src) {
                     this.playing.delete(channel);
+                    this.ranks.delete(channel);
+                }
             };
             src.start(0, buffer.duration > 0 ? offset % buffer.duration : 0);
             if (channel === MUSIC_CHANNEL && this.music !== null)
@@ -270,6 +344,28 @@ export class AudioEngine {
             .catch((err: unknown) => {
             this.note(`sound: ${name} failed (${err instanceof Error ? err.message : String(err)})`);
         });
+    }
+    placeConstants: PlaceConstants | null = null;
+    private connectPlaced(ctx: AudioContext, src: AudioBufferSourceNode, place: Place | undefined): void {
+        const out = this.output(ctx);
+        const c = this.placeConstants ?? getPlaceConstants();
+        if (place === undefined || c === null) {
+            src.connect(out);
+            return;
+        }
+        const { gain, pan } = placedGainPan(place, c);
+        const g = ctx.createGain();
+        g.gain.value = gain;
+        src.connect(g);
+        if (typeof ctx.createStereoPanner === "function") {
+            const p = ctx.createStereoPanner();
+            p.pan.value = pan;
+            g.connect(p);
+            p.connect(out);
+        }
+        else {
+            g.connect(out);
+        }
     }
     request(e: AudioRequest): void {
         switch (e.type) {
@@ -298,20 +394,27 @@ export class AudioEngine {
             case "Audio.PlaySfx": {
                 const what = `sfx id ${String(e.id)} note ${String(e.note)} on channel ${String(e.channel)}`;
                 const name = this.lookup("sfx", e.id, e.note, what);
+                const ch = this.channelOf(e);
                 if (name !== null)
-                    this.play(String(e.channel), name, false, what);
+                    this.playVoice(ch, e, name, what);
                 return;
             }
             case "Audio.PlayVoice": {
                 const what = `voice id ${String(e.id)} param ${String(e.param)} on channel ${String(e.channel)}`;
+                const tag = e.phrase as PhraseTag | undefined;
+                if (tag !== undefined && typeof tag === "object" && typeof tag.key === "string" && !this.voice.word(tag, `${String(e.id)}:${String(e.param)}`)) {
+                    this.onPlay?.(`${what}: refused by the voice mode`);
+                    return;
+                }
                 const name = this.lookup("voice", e.id, e.param, what);
+                const ch = this.channelOf(e);
                 if (name !== null)
-                    this.play(String(e.channel), name, false, what);
+                    this.playVoice(ch, e, name, what);
                 return;
             }
             case "Audio.ChannelCtl":
                 if (e.on === false)
-                    this.stopChannel(String(e.channel));
+                    this.stopChannel(this.channelOf(e));
                 return;
             case "Audio.Stop":
                 this.stopAll();

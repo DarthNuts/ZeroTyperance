@@ -21,13 +21,14 @@ export interface AppConstants {
         readonly customMax: number;
         readonly customDefault: number;
     };
-    readonly keys: Readonly<Record<"up" | "down" | "left" | "right" | "a" | "b" | "c" | "start" | "menu" | "fullscreen" | "mute" | "stateSave" | "stateLoad" | "savePassword", string>>;
+    readonly keys: Readonly<Record<"up" | "down" | "left" | "right" | "a" | "b" | "c" | "start" | "menu" | "fullscreen" | "mute" | "stateSave" | "stateLoad" | "savePassword" | "renderer" | "layout" | "moment" | "motionLog", string>>;
     readonly pad: Readonly<Record<"up" | "down" | "left" | "right" | "a" | "b" | "c" | "start" | "menu", number>> & {
         readonly stickDeadZone: number;
     };
     readonly audio: {
         readonly volumeDefault: number;
         readonly volumeMax: number;
+        readonly volumeStep: number;
     };
     readonly state: {
         readonly slots: number;
@@ -53,6 +54,11 @@ export interface AppConstants {
             readonly sensDefault: number;
             readonly smoothMax: number;
         };
+    };
+    readonly slides: {
+        readonly titles: readonly string[];
+        readonly texts: readonly string[];
+        readonly ms: number;
     };
     readonly touch: {
         readonly default: "auto" | "on" | "off";
@@ -144,7 +150,7 @@ export function appConstantsFrom(doc: unknown): AppConstants {
             up: name("APP.KEYS.UP"), down: name("APP.KEYS.DOWN"), left: name("APP.KEYS.LEFT"), right: name("APP.KEYS.RIGHT"),
             a: name("APP.KEYS.A"), b: name("APP.KEYS.B"), c: name("APP.KEYS.C"), start: name("APP.KEYS.START"),
             menu: name("APP.KEYS.MENU"), fullscreen: name("APP.KEYS.FULLSCREEN"), mute: name("APP.KEYS.MUTE"),
-            stateSave: name("APP.KEYS.STATE_SAVE"), stateLoad: name("APP.KEYS.STATE_LOAD"), savePassword: name("APP.KEYS.SAVE_PASSWORD"),
+            stateSave: name("APP.KEYS.STATE_SAVE"), stateLoad: name("APP.KEYS.STATE_LOAD"), savePassword: name("APP.KEYS.SAVE_PASSWORD"), renderer: name("APP.KEYS.RENDERER"), layout: name("APP.KEYS.LAYOUT"), moment: name("APP.KEYS.MOMENT"), motionLog: name("APP.KEYS.MOTIONLOG"),
         }),
         pw: Object.freeze({ slots: int("APP.PW.SLOTS"), noticeMs: int("APP.PW.NOTICE_MS") }),
         mouse: Object.freeze({
@@ -177,6 +183,14 @@ export function appConstantsFrom(doc: unknown): AppConstants {
             dpadSize: num("APP.TOUCH.DPAD_SIZE"), dpadDeadzone: num("APP.TOUCH.DPAD_DEADZONE"), buttonSize: num("APP.TOUCH.BUTTON_SIZE"),
             margin: num("APP.TOUCH.MARGIN"), opacity: num("APP.TOUCH.OPACITY"),
         }),
-        audio: Object.freeze({ volumeDefault: int("APP.AUDIO.VOLUME_DEFAULT"), volumeMax: int("APP.AUDIO.VOLUME_MAX") }),
+        slides: slidesFrom(list("APP.SLIDES.TITLES"), list("APP.SLIDES.TEXTS"), int("APP.SLIDES.MS")),
+        audio: Object.freeze({ volumeDefault: int("APP.AUDIO.VOLUME_DEFAULT"), volumeMax: int("APP.AUDIO.VOLUME_MAX"), volumeStep: int("APP.AUDIO.VOLUME_STEP") }),
     });
+}
+function slidesFrom(titles: readonly string[], texts: readonly string[], ms: number): AppConstants["slides"] {
+    if (titles.length !== texts.length)
+        throw new Error(`app_release.json: APP.SLIDES.TITLES has ${titles.length} titles, APP.SLIDES.TEXTS ${texts.length} texts`);
+    if (ms <= 0)
+        throw new Error("app_release.json: APP.SLIDES.MS is not positive");
+    return Object.freeze({ titles, texts, ms });
 }

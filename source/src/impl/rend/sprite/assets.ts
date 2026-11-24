@@ -1,7 +1,7 @@
 import { base64ToBytes, bytesToBase64 } from "../assets.js";
 import type { TexturePixels } from "../assets.js";
 import type { SpriteConstants } from "./constants.js";
-import type { Art, Bank, BankState, BankView, CompositeEntry, FrameRecord, ItemArt, ItemEntry, ItemGeometry, SpriteAssets } from "./types.js";
+import type { Art, ArtRef, Bank, BankState, BankView, CompositeEntry, FrameRecord, ItemArt, ItemEntry, ItemGeometry, SpriteAssets } from "./types.js";
 export const SPRITE_ASSETS_DOC_FORMAT = "zt-sprite-assets/1";
 export const ITEMS_FORMAT_PREFIX = "ztassets-items";
 export const SPRITES_FORMAT_PREFIX = "ztassets-sprites";
@@ -397,6 +397,10 @@ function buildAssets(doc: SpriteAssetsDoc, SC: SpriteConstants): SpriteAssets & 
         composites.set(c.cls, { cls: c.cls, bank: c.bank, state: c.state, frame: c.frame });
     const nothing = new Set(need(doc.draws_nothing, "draws_nothing"));
     const banks = new Map<string, Bank>();
+    const pools: Array<{
+        readonly name: string;
+        readonly pool: Uint8Array;
+    }> = [];
     for (const bd of need(doc.banks, "banks")) {
         const pool = base64ToBytes(bd.pool_b64);
         if (pool.length !== bd.slots * artSize)
@@ -410,6 +414,7 @@ function buildAssets(doc: SpriteAssetsDoc, SC: SpriteConstants): SpriteAssets & 
             })),
         }));
         const slots = bd.slots;
+        pools.push({ name: bd.name, pool });
         banks.set(bd.name, {
             name: bd.name,
             states,
@@ -429,8 +434,22 @@ function buildAssets(doc: SpriteAssetsDoc, SC: SpriteConstants): SpriteAssets & 
     const nightArray = doc.night_array ?? null;
     if (nightArray !== null && !arrays[nightArray])
         throw new Error(`sprite assets: night_array names the unknown array ${nightArray}`);
+    const itemSlotOf = new Map<Art, number>();
+    for (const [slot, a] of itemArts)
+        itemSlotOf.set(a, slot);
+    const artId = (art: Art): ArtRef | null => {
+        const it = itemSlotOf.get(art);
+        if (it !== undefined)
+            return { bank: null, slot: it };
+        for (const p of pools) {
+            if (art.buffer === p.pool.buffer && art.byteOffset >= p.pool.byteOffset && art.byteOffset < p.pool.byteOffset + p.pool.byteLength)
+                return { bank: p.name, slot: (art.byteOffset - p.pool.byteOffset) / artSize };
+        }
+        return null;
+    };
     return {
         nightArray,
+        artId,
         itemArt: (slot) => itemArts.get(slot) ?? null,
         item: (cls) => items.get(cls) ?? null,
         composite: (cls) => composites.get(cls) ?? null,

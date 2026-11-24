@@ -58,6 +58,20 @@ export function rebuildLanes(art: Uint8Array, E: number, C: RendConstants): Uint
     }
     return res;
 }
+export function laneBeyondArtRow(r: number, E: number, C: RendConstants): number {
+    const rows = C.VIEW_ROWS;
+    const half = C.BIG_HALF_ROWS;
+    if (r >= 0 && r < rows)
+        return r;
+    const d0 = laneBeyondD0(E, C);
+    if (r >= rows)
+        return E > 0 ? Math.min(rows - 1, half + Math.floor(((r - half) * half) / d0)) : rows - 1;
+    return E < 0 ? Math.max(0, half - 1 - Math.floor(((half - 1 - r) * half) / d0)) : 0;
+}
+export function laneBeyondD0(E: number, C: RendConstants): number {
+    const m = Math.abs(E);
+    return m + asr(m, REND_EYE.LANE_EXTRA_SHIFT) + C.BIG_HALF_ROWS;
+}
 function divmod16(n: number, d: number): [
     number,
     number
