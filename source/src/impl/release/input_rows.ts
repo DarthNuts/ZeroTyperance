@@ -1,7 +1,8 @@
 import type { Action, KeyBindings, PadBindings } from "./input.js";
 import type { ModernAction, ModernBindings } from "./modern_input.js";
 export type InputScheme = "original" | "modern";
-export type InputRowKind = "controls" | "binding" | "defaults" | "modern_binding" | "modern_defaults" | "touch" | "mouse" | "mouse_sensitivity" | "modern_sensitivity" | "modern_accel" | "modern_decel" | "modern_smoothing" | "turn_cap" | "selection" | "crouch_toggle";
+export type InputRowKind = "controls" | "binding" | "defaults" | "modern_binding" | "modern_defaults" | "touch" | "mouse" | "mouse_sensitivity" | "modern_sensitivity" | "modern_accel" | "modern_decel" | "modern_smoothing" | "turn_cap" | "selection" | "crouch_toggle" | "turn_backlog" | "raw_mouse";
+export const turnBacklogText = (v: "steps6" | "unlimited"): string => (v === "steps6" ? "6 steps" : "No limit");
 export interface InputRowDesc {
     kind: InputRowKind;
     action?: string;
@@ -28,6 +29,7 @@ export function inputRowLayout(s: InputRowsSpec): InputRowDesc[] {
             touch,
             { kind: "mouse", label: "Mouse" },
             { kind: "mouse_sensitivity", label: "Mouse sensitivity" },
+            { kind: "raw_mouse", label: "Raw mouse" },
         ];
     }
     const pageKeys = s.actions.filter((a) => s.hotkeys.includes(a));
@@ -43,7 +45,9 @@ export function inputRowLayout(s: InputRowsSpec): InputRowDesc[] {
         { kind: "modern_accel", label: "Mouse acceleration" },
         { kind: "modern_decel", label: "Mouse deceleration" },
         { kind: "modern_smoothing", label: "Mouse smoothing" },
+        { kind: "raw_mouse", label: "Raw mouse" },
         { kind: "turn_cap", label: "Turn cap" },
+        { kind: "turn_backlog", label: "Turn backlog" },
         { kind: "selection", label: "Selection" },
         { kind: "crouch_toggle", label: "Crouch toggle" },
         touch,

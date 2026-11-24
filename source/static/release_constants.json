@@ -240,6 +240,30 @@
    "value": 30
   },
   {
+   "id": "APP.MOUSE.SPIKE_REF_MS",
+   "value": 100
+  },
+  {
+   "id": "APP.MOUSE.SPIKE_MIN_COUNTS",
+   "value": 200
+  },
+  {
+   "id": "APP.MOUSE.SPIKE_RATE_FACTOR",
+   "value": 3
+  },
+  {
+   "id": "APP.MOUSE.SPIKE_CONFIRM_DIV",
+   "value": 3
+  },
+  {
+   "id": "APP.MODERN.TURN_BACKLOG_STEPS",
+   "value": 6
+  },
+  {
+   "id": "APP.MOTIONLOG.BOB_UNITS",
+   "value": 2
+  },
+  {
    "id": "APP.MODERN.KEYS.FORWARD",
    "value": [
     "KeyW"
@@ -387,7 +411,7 @@
   },
   {
    "id": "APP.VERSION",
-   "value": "0.3.0"
+   "value": "0.3.1"
   }
  ]
 }

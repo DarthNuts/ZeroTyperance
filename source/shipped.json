@@ -168,6 +168,7 @@
  "impl/release/page_pack.js",
  "impl/release/passwords.js",
  "impl/release/ping.js",
+ "impl/release/pointer_filter.js",
  "impl/release/quickstart.js",
  "impl/release/runner.js",
  "impl/release/savestate.js",

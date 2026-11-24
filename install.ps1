@@ -1,4 +1,4 @@
-# ZeroTyperance 0.3.0 installer for Windows (Windows PowerShell 5.1 or PowerShell 7).
+# ZeroTyperance 0.3.1 installer for Windows (Windows PowerShell 5.1 or PowerShell 7).
 #   irm https://github.com/DarthNuts/ZeroTyperance/releases/latest/download/install.ps1 | iex
 #   uninstall: $env:ZT_UNINSTALL=1; irm https://github.com/DarthNuts/ZeroTyperance/releases/latest/download/install.ps1 | iex
 # It installs the game page, the co-op server and a private copy of Node.js 24.22.2 (from nodejs.org, checked
@@ -12,7 +12,7 @@
 & {
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
-$ztVersion = '0.3.0'
+$ztVersion = '0.3.1'
 $nodeVersion = '24.22.2'
 $base = if ($env:ZT_RELEASE_BASE) { $env:ZT_RELEASE_BASE.TrimEnd('/') } else { 'https://github.com/DarthNuts/ZeroTyperance/releases/latest/download' }
 $prefix = if ($env:ZT_PREFIX) { $env:ZT_PREFIX } else { Join-Path $env:LOCALAPPDATA 'Programs\ZeroTyperance' }

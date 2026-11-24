@@ -14,6 +14,9 @@ import type { Action } from "./input.js";
 import { TouchVisibility } from "./touch.js";
 import { TouchOverlay } from "./touch_dom.js";
 import { OriginalMouse } from "./mouse.js";
+import { PointerFilter } from "./pointer_filter.js";
+import { turnBacklogText } from "./input_rows.js";
+import type { CaptureMode } from "./mouse_dom.js";
 import { attachMouse } from "./mouse_dom.js";
 import { installMotionLogInBrowser, motionLogKey } from "./motion_log.js";
 import type { InstalledMotionLog } from "./motion_log.js";
@@ -163,11 +166,14 @@ export async function mountRelease(container: HTMLElement, deps: ReleaseDeps): P
         noticeTimer = setTimeout(() => { noticeDiv.hidden = true; }, c.pw.noticeMs);
     };
     const mouse = new OriginalMouse(c.mouse, settings.input.mouse.sensitivity);
+    const pointer = new PointerFilter(c.mouse);
+    let captureMode: CaptureMode = "plain";
     const modernOn = (): boolean => settings.input.scheme === "modern";
     mouse.enabled = settings.input.mouse.enabled || modernOn();
     const modernCfg = (): ModernConfig => ({
         bindings: settings.input.modern.keys, mouse: settings.input.modern.mouse,
         turnCap: settings.input.modern.turn_cap, crouchToggle: settings.input.modern.crouch_toggle,
+        turnBacklogSteps: settings.input.modern.turn_backlog === "steps6" ? c.modern.turnBacklogSteps : null,
     });
     let modernIn: ModernInputState | null = null;
     let modernCapture: ModernAction | null = null;
@@ -189,6 +195,11 @@ export async function mountRelease(container: HTMLElement, deps: ReleaseDeps): P
             setMenuOpen(true);
             render();
         }
+    }, {
+        move: (dx) => pointer.add(dx, performance.now()),
+        raw: () => settings.input.mouse.raw,
+        onMode: (m) => { captureMode = m; },
+        onRelease: () => { pointer.reset(); },
     });
     const syncTouch = (): void => touch.setVisible(game.running && !menuOpen && touchVis.visible);
     const save = (): void => { saveSettings(deps.storage, c, settings, fovRange); };
@@ -240,10 +251,13 @@ export async function mountRelease(container: HTMLElement, deps: ReleaseDeps): P
             originalMouseEnabled: settings.input.mouse.enabled, originalMouseSensitivity: settings.input.mouse.sensitivity,
             modernMouseSensitivity: settings.input.modern.mouse.sensitivity, modernMouseAcceleration: settings.input.modern.mouse.accel,
             modernMouseDeceleration: settings.input.modern.mouse.decel, modernMouseSmoothingSteps: settings.input.modern.mouse.smoothing, modernTurnCap: settings.input.modern.turn_cap,
+            modernTurnBacklog: settings.input.modern.turn_backlog, rawMouse: settings.input.mouse.raw, captureMode,
             devicePixelRatio: window.devicePixelRatio, innerWidthPx: window.innerWidth, innerHeightPx: window.innerHeight,
         }),
         renderer: () => settings.video.renderer,
         mouseLocked: () => mouseAtt.locked,
+        levelPlayed: () => levelPlayedNow(),
+        bobUnits: c.motionLogBobUnits,
         notice: (text) => showNotice(text),
     });
     interface Item {
@@ -583,6 +597,12 @@ export async function mountRelease(container: HTMLElement, deps: ReleaseDeps): P
                 case "crouch_toggle":
                     return { label, value: settings.input.modern.crouch_toggle ? "on" : "off",
                         act: () => setModern({ crouch_toggle: !settings.input.modern.crouch_toggle }) };
+                case "turn_backlog":
+                    return { label, value: turnBacklogText(settings.input.modern.turn_backlog),
+                        act: () => setModern({ turn_backlog: settings.input.modern.turn_backlog === "steps6" ? "unlimited" : "steps6" }) };
+                case "raw_mouse":
+                    return { label, value: settings.input.mouse.raw ? "on" : "off",
+                        act: () => { const raw = !settings.input.mouse.raw; change(() => { settings = { ...settings, input: { ...settings.input, mouse: { ...settings.input.mouse, raw } } }; }); } };
             }
         };
         return layout.map(build);
@@ -1089,6 +1109,7 @@ export async function mountRelease(container: HTMLElement, deps: ReleaseDeps): P
         syncTouch();
         modernIn?.releaseAll();
         if (open) {
+            pointer.reset();
             input.releaseAll();
             mouseAtt.release();
             mouseBits = 0;
@@ -1679,8 +1700,6 @@ export async function mountRelease(container: HTMLElement, deps: ReleaseDeps): P
             onAction(e);
     });
     window.addEventListener("keyup", (ev: KeyboardEvent) => { input.keyUp(ev.code); modernIn?.release(ev.code); });
-    document.addEventListener("mousemove", (ev: MouseEvent) => { const mi = modernLive(); if (mi && mouseAtt.locked && !menuOpen)
-        mi.motion(ev.movementX); });
     window.addEventListener("mousedown", (ev: MouseEvent) => {
         if (modernCapture) {
             ev.preventDefault();
@@ -1749,7 +1768,25 @@ export async function mountRelease(container: HTMLElement, deps: ReleaseDeps): P
             prevPad = buttons;
         }
     }
-    const poll = (): void => {
+    const levelPlayedNow = (): boolean => {
+        if (menuOpen || !game.running)
+            return false;
+        const pg = coopSession ? coopLiveNow?.coop.page : null;
+        return pg ? coopSeatPlays(pg, pg.seat, menuOpen) : game.levelPlays;
+    };
+    let wasPlayed = false;
+    const poll = (stamp: number): void => {
+        const begun = performance.now();
+        const played = levelPlayedNow();
+        if (played && !wasPlayed)
+            pointer.reset();
+        wasPlayed = played;
+        const w = pointer.close(begun);
+        if (w.accepted !== 0 && game.running && !menuOpen) {
+            mouse.move(w.accepted);
+            modernLive()?.motion(w.accepted);
+        }
+        motion?.log.noteFilterWindow(w, { latenessMs: begun - stamp, captureMode, backlogDiscardedUnits: modernIn?.backlogDiscarded ?? 0 });
         mouseBits = mouseAtt.poll(performance.now());
         readGamepad();
         if (menuOpen && menu.page === "coop" && coopCtl) {

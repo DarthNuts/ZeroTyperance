@@ -68,8 +68,9 @@ export interface ModernConfig {
     mouse: ModernMouseSettings;
     turnCap: "original" | "fast";
     crouchToggle: boolean;
+    turnBacklogSteps?: number | null;
 }
-export const TEST_ONLY = { capPending: false };
+export const TEST_ONLY = { capPending: false, wholePending: false };
 const PERCENT = 100;
 export class ModernInputState {
     private cfg: ModernConfig;
@@ -83,14 +84,15 @@ export class ModernInputState {
     private history: number[] = [];
     private frac = 0;
     private prevTurn = 0;
+    private backlogCut = 0;
     constructor(cfg: ModernConfig, caps: ModernCaps) {
-        this.cfg = { bindings: cfg.bindings, mouse: { ...cfg.mouse }, turnCap: cfg.turnCap, crouchToggle: cfg.crouchToggle };
+        this.cfg = { bindings: cfg.bindings, mouse: { ...cfg.mouse }, turnCap: cfg.turnCap, crouchToggle: cfg.crouchToggle, turnBacklogSteps: cfg.turnBacklogSteps ?? null };
         this.caps = caps;
     }
     configure(cfg: ModernConfig): void {
         if (this.cfg.crouchToggle && !cfg.crouchToggle)
             this.crouchOn = false;
-        this.cfg = { bindings: cfg.bindings, mouse: { ...cfg.mouse }, turnCap: cfg.turnCap, crouchToggle: cfg.crouchToggle };
+        this.cfg = { bindings: cfg.bindings, mouse: { ...cfg.mouse }, turnCap: cfg.turnCap, crouchToggle: cfg.crouchToggle, turnBacklogSteps: cfg.turnBacklogSteps ?? null };
     }
     private actionsOf(code: string): ModernAction[] {
         return MODERN_ACTIONS.filter((a) => this.cfg.bindings[a].includes(code));
@@ -169,19 +171,22 @@ export class ModernInputState {
         this.counts = 0;
         this.prevTurn = plan.t;
         this.frac = plan.total - plan.given;
+        this.backlogCut += plan.cut;
         return plan.given === 0 ? 0 : plan.given;
     }
     pendingMouseTurn(v = 0): number {
         const p = this.planMouseTurn(v);
-        const g = TEST_ONLY.capPending ? p.given : Math.trunc(p.total);
+        const g = TEST_ONLY.capPending ? p.given : TEST_ONLY.wholePending ? Math.trunc(p.total) : p.total;
         return g === 0 ? 0 : g;
     }
+    get backlogDiscarded(): number { return this.backlogCut; }
     get mouseTurnMax(): number { return this.caps.mouseTurnMax; }
     private planMouseTurn(v: number): {
         history: number[];
         t: number;
         total: number;
         given: number;
+        cut: number;
     } {
         const m = this.cfg.mouse;
         const n = Math.max(1, Math.floor(m.smoothing));
@@ -199,12 +204,18 @@ export class ModernInputState {
             if (this.prevTurn !== 0 && Math.abs(t) < Math.abs(floor) && t * this.prevTurn >= 0)
                 t = floor;
         }
-        const total = t + this.frac;
-        const whole = Math.trunc(total);
+        let total = t + this.frac;
         const cap = this.cfg.turnCap === "original" ? this.caps.original : this.caps.fast;
+        let cut = 0;
+        const steps = this.cfg.turnBacklogSteps;
+        if (steps !== null && steps !== undefined && Math.abs(total) > steps * cap) {
+            cut = Math.abs(total) - steps * cap;
+            total = Math.sign(total) * steps * cap;
+        }
+        const whole = Math.trunc(total);
         const lo = Math.max(-cap - v, -this.caps.mouseTurnMax);
         const hi = Math.min(cap - v, this.caps.mouseTurnMax);
         const given = Math.min(hi, Math.max(lo, whole));
-        return { history, t, total, given };
+        return { history, t, total, given, cut };
     }
 }

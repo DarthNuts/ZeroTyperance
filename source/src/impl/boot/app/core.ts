@@ -947,6 +947,8 @@ export function startCore(makeDebug?: (c: CoreControl) => DebugPart): void {
             tickMs: TICK_MS,
             maxCatchUp: MAX_CATCH_UP,
         };
+        if (host)
+            host.levelPlays = () => levelWait() !== null;
         function loop(now: number): void {
             loopFrame(clock, loopHooks, now);
             requestAnimationFrame(loop);

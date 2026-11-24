@@ -17,8 +17,23 @@ export const MOTION_LOG = Object.freeze({
     MAX_CLIPS: 20,
     NOTICE_EVERY_MS: 1000,
 });
-export const MOTION_LOG_TEST = { rule329: false };
-export type JumpKind = "stall" | "against" | "leap";
+export const MOTION_LOG_TEST = { rule329: false, rule333: false };
+export interface MotionFilterWindow {
+    readonly raw: number;
+    readonly accepted: number;
+    readonly held: number;
+    readonly discarded: number;
+    readonly largestMove: number;
+    readonly spanMs: number;
+    readonly events: number;
+    readonly suspect: boolean;
+}
+export interface MotionFrameStart {
+    readonly latenessMs: number;
+    readonly captureMode: "raw" | "plain";
+    readonly backlogDiscardedUnits: number;
+}
+export type JumpKind = "stall" | "against" | "leap" | "spike";
 export interface MotionJump {
     readonly frameTimeMs: number;
     readonly kinds: JumpKind[];
@@ -90,6 +105,18 @@ export interface MotionFrameRecord {
     mouseCountX: number;
     mouseCountY: number;
     mouseEventCount: number;
+    rawMouseCountX: number;
+    largestMoveX: number;
+    moveSpanMs: number;
+    filterAccepted: number;
+    filterHeld: number;
+    filterDiscarded: number;
+    turnBacklogDiscardedUnits: number;
+    spikeRawSum: number | null;
+    spikeHeld: number | null;
+    captureMode: "raw" | "plain" | null;
+    latenessMs: number | null;
+    frameWorkMs: number;
     stepsBegun: {
         iteration: number | null;
         controllerByte: number | null;
@@ -112,12 +139,16 @@ export interface MotionSummary {
     readonly largestAngleStepPerFrame: number;
     readonly largestStepWorkMs: number;
     readonly largestPageThreadMs: number;
+    readonly framesWorkOverIntervalPerSecond: number;
+    readonly spikes: number;
 }
 export interface MotionLogOptions {
     now(): number;
     settings(): Record<string, unknown>;
     renderer(): "custom" | "original";
     notice?(text: string): void;
+    levelPlayed?(): boolean;
+    bobUnits?: number;
 }
 const wrapTurn = (d: number): number => {
     const a = MOTION_LOG.ANGLES;
@@ -138,6 +169,24 @@ export class MotionLog implements MotionObserver {
     private previousDrawn: MotionFrameRecord | null = null;
     private clips: MotionClip[] = [];
     private lastNoticeMs = -Infinity;
+    private win: {
+        seen: boolean;
+        raw: number;
+        accepted: number;
+        held: number;
+        discarded: number;
+        largest: number;
+        span: number;
+        spikeRaw: number | null;
+        spikeHeld: number | null;
+        mode: "raw" | "plain" | null;
+        lateness: number | null;
+        backlog: number;
+    } = MotionLog.emptyWin();
+    private backlogSeen = 0;
+    private static emptyWin(): MotionLog["win"] {
+        return { seen: false, raw: 0, accepted: 0, held: 0, discarded: 0, largest: 0, span: 0, spikeRaw: null, spikeHeld: null, mode: null, lateness: null, backlog: 0 };
+    }
     constructor(private readonly o: MotionLogOptions) { }
     private jump(r: MotionFrameRecord, kind: JumpKind): void {
         const t = r.frameTimeMs;
@@ -206,6 +255,27 @@ export class MotionLog implements MotionObserver {
         return dir !== 0 && Math.sign(a) === -dir;
     }
     get clipRecords(): readonly MotionClip[] { return this.clips; }
+    noteFilterWindow(w: MotionFilterWindow, s: MotionFrameStart): void {
+        const v = this.win;
+        v.seen = true;
+        v.raw += w.raw;
+        v.accepted += w.accepted;
+        v.held = w.held;
+        v.discarded += w.discarded;
+        if (Math.abs(w.largestMove) > Math.abs(v.largest))
+            v.largest = w.largestMove;
+        if (w.spanMs > v.span)
+            v.span = w.spanMs;
+        if (w.suspect) {
+            v.spikeRaw = (v.spikeRaw ?? 0) + w.raw;
+            v.spikeHeld = w.held;
+        }
+        v.mode = s.captureMode;
+        if (v.lateness === null)
+            v.lateness = s.latenessMs;
+        v.backlog += Math.max(0, s.backlogDiscardedUnits - this.backlogSeen);
+        this.backlogSeen = Math.max(this.backlogSeen, s.backlogDiscardedUnits);
+    }
     noteMouse(movementX: number, movementY: number): void {
         if (Number.isFinite(movementX))
             this.mouseX += movementX;
@@ -234,17 +304,25 @@ export class MotionLog implements MotionObserver {
             pictureTickMs: null, drawHdMs: null, rendererDrawn: this.o.renderer(), pathDrawn: null, smoothMotion: null,
             drawnCamX: null, drawnCamY: null, drawnCamAngle: null, drawnAngleStepSincePreviousFrame: null, blendAlpha: null,
             blendSnapshotIteration: null, blendPrevSnapshotIteration: null, newestSnapshotIteration: null, newestSnapshotCamAngle: null,
-            modernTurnAdded: null, mouseTurnsView: null, episode: null, floor: null, cellX: null, cellY: null, mouseCountX: this.mouseX, mouseCountY: this.mouseY, mouseEventCount: this.mouseEvents, stepsBegun: [],
+            modernTurnAdded: null, mouseTurnsView: null, episode: null, floor: null, cellX: null, cellY: null, mouseCountX: this.win.seen ? this.win.accepted : this.mouseX, mouseCountY: this.mouseY, mouseEventCount: this.mouseEvents,
+            rawMouseCountX: this.win.seen ? this.win.raw : this.mouseX, largestMoveX: this.win.largest, moveSpanMs: this.win.span,
+            filterAccepted: this.win.accepted, filterHeld: this.win.held, filterDiscarded: this.win.discarded, turnBacklogDiscardedUnits: this.win.backlog,
+            spikeRawSum: this.win.spikeRaw, spikeHeld: this.win.spikeHeld, captureMode: this.win.mode, latenessMs: this.win.lateness, frameWorkMs: 0,
+            stepsBegun: [],
             stepWorkMs: null, stepWorldMs: null, stepOriginalPictureMs: null, stepHdSnapshotMs: null, stepRestMs: null, stepPageThreadMs: null, coop: null,
         };
         this.mouseX = 0;
         this.mouseY = 0;
         this.mouseEvents = 0;
+        this.win = MotionLog.emptyWin();
         this.frames.push(r);
         this.trim(frameTimeMs);
         this.intoOpenClip(r, null);
-        if (r.sincePreviousFrameMs !== null && r.sincePreviousFrameMs > MOTION_LOG.STALL_MS)
+        const played = MOTION_LOG_TEST.rule333 || (this.o.levelPlayed?.() ?? true);
+        if (r.sincePreviousFrameMs !== null && r.sincePreviousFrameMs > MOTION_LOG.STALL_MS && played)
             this.jump(r, "stall");
+        if (r.spikeRawSum !== null && !MOTION_LOG_TEST.rule333)
+            this.jump(r, "spike");
         return r;
     }
     private trim(nowMs: number): void {
@@ -284,6 +362,7 @@ export class MotionLog implements MotionObserver {
             f.stepHdSnapshotMs = add(f.stepHdSnapshotMs, r.parts?.snapshotMs);
             f.stepRestMs = add(f.stepRestMs, r.parts?.restMs);
             f.stepPageThreadMs = add(f.stepPageThreadMs, r.pageThreadMs ?? r.endMs - r.startMs);
+            f.frameWorkMs = (f.stepWorkMs ?? 0) + (f.drawHdMs ?? 0);
             this.steps.push(step);
             this.intoOpenClip(null, step);
             f.stepsBegun.push({ iteration: step.iteration, controllerByte: step.controllerByte, mouseTurnAfterCap: step.mouseTurnAfterCap });
@@ -320,6 +399,7 @@ export class MotionLog implements MotionObserver {
         this.coopMergeOpen = null;
         const f = open !== null && open.drawHdMs === null && open === this.frames[this.frames.length - 1] && Math.abs(r.frameTimeMs - open.frameTimeMs) < COOP_MERGE_MS ? open : this.recordFor(r.frameTimeMs);
         f.drawHdMs = r.drawHdMs;
+        f.frameWorkMs = (f.stepWorkMs ?? 0) + (f.drawHdMs ?? 0);
         f.rendererDrawn = "custom";
         f.pathDrawn = r.pathDrawn;
         f.smoothMotion = r.smoothMotion;
@@ -345,9 +425,12 @@ export class MotionLog implements MotionObserver {
             f.cellX = r.cellX ?? null;
             f.cellY = r.cellY ?? null;
         }
-        f.drawnAngleStepSincePreviousFrame = this.previousDrawn?.drawnCamAngle != null ? wrapTurn(r.drawnCamAngle - this.previousDrawn.drawnCamAngle) : null;
+        const pd = this.previousDrawn;
+        f.drawnAngleStepSincePreviousFrame = pd?.drawnCamAngle != null ? wrapTurn(r.drawnCamAngle - pd.drawnCamAngle) : null;
+        const sway = pd !== null && f.drawnAngleStepSincePreviousFrame !== null && Math.abs(f.drawnAngleStepSincePreviousFrame) <= (this.o.bobUnits ?? 0) &&
+            f.newestSnapshotIteration !== pd.newestSnapshotIteration && (f.drawnCamX !== pd.drawnCamX || f.drawnCamY !== pd.drawnCamY);
         this.previousDrawn = f;
-        if (this.againstMouse(f))
+        if ((MOTION_LOG_TEST.rule333 || !sway) && this.againstMouse(f))
             this.jump(f, "against");
         const i = this.frames.lastIndexOf(f);
         const p = i > 0 ? this.frames[i - 1]! : null;
@@ -357,7 +440,8 @@ export class MotionLog implements MotionObserver {
     get frameRecords(): readonly MotionFrameRecord[] { return this.frames; }
     get stepRecords(): readonly MotionStepRecord[] { return this.steps; }
     summary(fromMs: number): MotionSummary {
-        let frameCount = 0, slow = 0, largestInterval = 0, against = 0, largestStep = 0, largestWork = 0, largestPage = 0;
+        let frameCount = 0, slow = 0, largestInterval = 0, against = 0, largestStep = 0, largestWork = 0, largestPage = 0, over = 0, spikes = 0;
+        let firstMs: number | null = null, lastMs = 0;
         let dir = 0;
         let dirAt = -Infinity;
         for (const f of this.frames) {
@@ -368,7 +452,14 @@ export class MotionLog implements MotionObserver {
             if (f.frameTimeMs < fromMs)
                 continue;
             frameCount++;
+            if (firstMs === null)
+                firstMs = f.frameTimeMs;
+            lastMs = f.frameTimeMs;
+            if (f.spikeRawSum != null)
+                spikes++;
             const iv = f.sincePreviousFrameMs;
+            if (iv !== null && (f.frameWorkMs ?? 0) > iv)
+                over++;
             if (iv !== null) {
                 if (iv > MOTION_LOG.SLOW_FRAME_MS)
                     slow++;
@@ -387,13 +478,15 @@ export class MotionLog implements MotionObserver {
                     against++;
             }
         }
-        return { frameCount, framesSlowerThanLimit: slow, largestFrameIntervalMs: largestInterval, angleStepsAgainstMouseDirection: against, largestAngleStepPerFrame: largestStep, largestStepWorkMs: largestWork, largestPageThreadMs: largestPage };
+        return { frameCount, framesSlowerThanLimit: slow, largestFrameIntervalMs: largestInterval, angleStepsAgainstMouseDirection: against, largestAngleStepPerFrame: largestStep, largestStepWorkMs: largestWork, largestPageThreadMs: largestPage,
+            framesWorkOverIntervalPerSecond: firstMs !== null && lastMs > firstMs ? over / ((lastMs - firstMs) / 1000) : over, spikes };
     }
     summaryLine(nowMs: number): string {
         const s = this.summary(nowMs - MOTION_LOG.SUMMARY_EVERY_MS);
         return `[motionlog] last ${MOTION_LOG.SUMMARY_EVERY_MS / 1000} s: frames=${s.frameCount}, framesSlowerThan${MOTION_LOG.SLOW_FRAME_MS}Ms=${s.framesSlowerThanLimit}, ` +
             `largestFrameIntervalMs=${s.largestFrameIntervalMs.toFixed(1)}, angleStepsAgainstMouseDirection=${s.angleStepsAgainstMouseDirection}, ` +
-            `largestAngleStepPerFrame=${s.largestAngleStepPerFrame.toFixed(2)}, largestStepWorkMs=${s.largestStepWorkMs.toFixed(1)}, largestPageThreadMs=${s.largestPageThreadMs.toFixed(1)}`;
+            `largestAngleStepPerFrame=${s.largestAngleStepPerFrame.toFixed(2)}, largestStepWorkMs=${s.largestStepWorkMs.toFixed(1)}, largestPageThreadMs=${s.largestPageThreadMs.toFixed(1)}, ` +
+            `framesWorkOverIntervalPerSecond=${s.framesWorkOverIntervalPerSecond.toFixed(2)}, spikes=${s.spikes}`;
     }
     toJson(): string {
         const savedAtPageTimeMs = this.o.now();
@@ -409,6 +502,11 @@ export class MotionLog implements MotionObserver {
                 stall: `a frame whose time since the previous frame is more than ${MOTION_LOG.STALL_MS} ms`,
                 against: `a frame whose drawn angle step is not 0 and has the opposite sign of every non-zero mouse x count of the ${MOTION_LOG.AGAINST_MOUSE_MS} ms before it (all of them one sign)`,
                 leap: `a frame whose drawn camera position moved more than ${MOTION_LOG.LEAP_UNITS} units since the previous frame`,
+                spike: "a frame with a window the spike filter found suspect (ZT-APP-RELEASE 4.6d): spikeRawSum the window's raw sum, spikeHeld the rest it held",
+                againstSway: `'against' does not count a drawn step of at most ${this.o.bobUnits ?? 0} units at a new snapshot while the drawn camera moves (the walking sway)`,
+                stallOnlyInPlay: "'stall' is counted only while a level is played",
+                mouseCounts: "mouseCountX: the accepted movement after the spike filter; rawMouseCountX: before it; filterAccepted / filterHeld / filterDiscarded: the filter's counts of the frame; turnBacklogDiscardedUnits: the Turn backlog's discards (angle units)",
+                lateness: "latenessMs: the clock when the frame's work began minus the frame's stamp; frameWorkMs: the step's work begun in the frame plus HD's drawing",
                 timesAreMsSincePageStart: true,
                 angleUnitsPerTurn: MOTION_LOG.ANGLES,
                 drawnAngleStepSincePreviousFrame: "short way round, positive = the direction a positive mouse count turns",
@@ -417,6 +515,7 @@ export class MotionLog implements MotionObserver {
                 angleStepsAgainstMouseDirection: `a frame whose angle step has the sign opposite to the last mouse count within ${MOTION_LOG.MOUSE_DIRECTION_HOLD_MS} ms`,
             },
             settings: this.o.settings(),
+            summary: this.summary(-Infinity),
             clips: this.clips.map((c) => ({ startMs: c.startMs, endMs: c.endMs, complete: savedAtPageTimeMs >= c.endMs, jumps: c.jumps, frames: c.frames, steps: c.steps })),
         });
     }
@@ -500,9 +599,12 @@ export function installMotionLogInBrowser(o: {
     renderer(): "custom" | "original";
     mouseLocked(): boolean;
     notice(text: string): void;
+    levelPlayed(): boolean;
+    bobUnits: number;
 }): InstalledMotionLog | null {
     return installMotionLog({
         search: location.search, now: () => performance.now(), settings: o.settings, renderer: o.renderer, mouseLocked: o.mouseLocked, notice: o.notice,
+        levelPlayed: o.levelPlayed, bobUnits: o.bobUnits,
         window: window as unknown as MotionLogDeps["window"], setInterval: (f, ms) => setInterval(f, ms), clearInterval: (h) => clearInterval(h as ReturnType<typeof setInterval>),
         log: (line) => console.log(line),
         download: (name, text) => {

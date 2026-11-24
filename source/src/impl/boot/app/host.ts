@@ -124,6 +124,7 @@ export interface HostHd {
 export interface AppHost {
     hd?: () => HostHd;
     modernTurn?: (newestSessionStep: number | null, onePlayerPlays: boolean) => number | null;
+    levelPlays?: () => boolean;
     stepMs?: (paced: boolean) => number;
     paceMs?: (pace: {
         readonly num: number;

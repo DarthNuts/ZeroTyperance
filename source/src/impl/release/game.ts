@@ -64,6 +64,7 @@ export class GameHost {
         this.o = o;
     }
     get running(): boolean { return this.started; }
+    get levelPlays(): boolean { return this.started && (this.host.levelPlays?.() ?? false); }
     get isPaused(): boolean { return this.paused; }
     get canvasElement(): HTMLCanvasElement | null { return this.canvas; }
     async start(): Promise<void> {

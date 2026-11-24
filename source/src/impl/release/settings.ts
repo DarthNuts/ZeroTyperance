@@ -19,6 +19,7 @@ export interface ModernSettings {
         smoothing: number;
     };
     turn_cap: "original" | "fast";
+    turn_backlog: "steps6" | "unlimited";
     selection: "carousel" | "slots";
     crouch_toggle: boolean;
 }
@@ -114,6 +115,7 @@ export interface Settings {
         mouse: {
             enabled: boolean;
             sensitivity: number;
+            raw: boolean;
         };
         scheme: "original" | "modern";
         modern: ModernSettings;
@@ -132,7 +134,7 @@ export function defaultModernSettings(c: AppConstants): ModernSettings {
     return {
         keys: defaultModernBindings(c),
         mouse: { sensitivity: c.modern.mouse.sensDefault, accel: 0, decel: 0, smoothing: 1 },
-        turn_cap: "fast", selection: "slots", crouch_toggle: false,
+        turn_cap: "fast", turn_backlog: "steps6", selection: "slots", crouch_toggle: false,
     };
 }
 function modernKeys(v: unknown, d: ModernBindings): ModernBindings {
@@ -163,6 +165,7 @@ function normalizeModern(v: unknown, c: AppConstants, d: ModernSettings): Modern
             smoothing: clampInt(mouse.smoothing, 1, c.modern.mouse.smoothMax, d.mouse.smoothing),
         },
         turn_cap: oneOf(m.turn_cap, ["original", "fast"], d.turn_cap),
+        turn_backlog: oneOf(m.turn_backlog, ["steps6", "unlimited"], d.turn_backlog),
         selection: oneOf(m.selection, ["carousel", "slots"], d.selection),
         crouch_toggle: bool(m.crouch_toggle, d.crouch_toggle),
     };
@@ -203,7 +206,7 @@ export function defaultSettings(c: AppConstants): Settings {
         audio: { volume: c.audio.volumeDefault, mute: false, voice_mode: "once_per_phrase", voice_interval: VOICE_INTERVAL_DEFAULT },
         game: { intro: "start", fix_990: true },
         cheats: { c1: false, c2: false, c3: false, c4: false, c5: "off", c6: "off" },
-        input: { keys: defaultKeyBindings(c), pad: defaultPadBindings(c), touch: c.touch.default, mouse: { enabled: false, sensitivity: c.mouse.sensDefault },
+        input: { keys: defaultKeyBindings(c), pad: defaultPadBindings(c), touch: c.touch.default, mouse: { enabled: false, sensitivity: c.mouse.sensDefault, raw: false },
             scheme: "modern", modern: defaultModernSettings(c) },
         passwords: { saved: Array.from({ length: c.pw.slots }, () => "") },
         net: { server: "", stun: [], delay: null },
@@ -298,6 +301,7 @@ export function normalizeSettings(v: unknown, c: AppConstants, fov?: FovRange): 
             mouse: {
                 enabled: bool(mouse.enabled, d.input.mouse.enabled),
                 sensitivity: clampInt(mouse.sensitivity, c.mouse.sensMin, c.mouse.sensMax, d.input.mouse.sensitivity),
+                raw: bool(mouse.raw, d.input.mouse.raw),
             },
         },
         passwords: {

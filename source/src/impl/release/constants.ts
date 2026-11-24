@@ -45,6 +45,10 @@ export interface AppConstants {
         readonly sensDefault: number;
         readonly drain: number;
         readonly capBlanks: number;
+        readonly spikeRefMs: number;
+        readonly spikeMinCounts: number;
+        readonly spikeRateFactor: number;
+        readonly spikeConfirmDiv: number;
     };
     readonly modern: {
         readonly keys: Readonly<Record<"forward" | "back" | "strafeLeft" | "strafeRight" | "turnLeft" | "turnRight" | "jump" | "crouch" | "fire" | "nextItem" | "prevItem" | "slot1" | "slot2" | "slot3" | "slot4" | "slot5" | "pause", readonly string[]>>;
@@ -54,7 +58,9 @@ export interface AppConstants {
             readonly sensDefault: number;
             readonly smoothMax: number;
         };
+        readonly turnBacklogSteps: number;
     };
+    readonly motionLogBobUnits: number;
     readonly slides: {
         readonly titles: readonly string[];
         readonly texts: readonly string[];
@@ -156,6 +162,7 @@ export function appConstantsFrom(doc: unknown): AppConstants {
         mouse: Object.freeze({
             sensMin: int("APP.MOUSE.SENS_MIN"), sensMax: int("APP.MOUSE.SENS_MAX"), sensDefault: int("APP.MOUSE.SENS_DEFAULT"),
             drain: int("APP.MOUSE.DRAIN"), capBlanks: int("APP.MOUSE.CAP_BLANKS"),
+            spikeRefMs: int("APP.MOUSE.SPIKE_REF_MS"), spikeMinCounts: int("APP.MOUSE.SPIKE_MIN_COUNTS"), spikeRateFactor: int("APP.MOUSE.SPIKE_RATE_FACTOR"), spikeConfirmDiv: int("APP.MOUSE.SPIKE_CONFIRM_DIV"),
         }),
         state: Object.freeze({ slots: int("APP.STATE.SLOTS"), format: int("APP.STATE.FORMAT"), db: name("APP.STORE.STATES_DB") }),
         pad: Object.freeze({
@@ -177,7 +184,9 @@ export function appConstantsFrom(doc: unknown): AppConstants {
                 sensMin: int("APP.MODERN.MOUSE.SENS_MIN"), sensMax: int("APP.MODERN.MOUSE.SENS_MAX"),
                 sensDefault: int("APP.MODERN.MOUSE.SENS_DEFAULT"), smoothMax: int("APP.MODERN.MOUSE.SMOOTH_MAX"),
             }),
+            turnBacklogSteps: int("APP.MODERN.TURN_BACKLOG_STEPS"),
         }),
+        motionLogBobUnits: int("APP.MOTIONLOG.BOB_UNITS"),
         touch: Object.freeze({
             default: touchMode(name("APP.TOUCH.DEFAULT")),
             dpadSize: num("APP.TOUCH.DPAD_SIZE"), dpadDeadzone: num("APP.TOUCH.DPAD_DEADZONE"), buttonSize: num("APP.TOUCH.BUTTON_SIZE"),

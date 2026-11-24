@@ -18,7 +18,7 @@ the results in the browser's storage. What it ships besides its code is the engi
 damage and the like, written as numbers) and the frame timing of the attract demos as measured on a console. To use
 your own copy of the ROM image instead, install with `ZT_NO_ROM=1` and pick it in the page.
 
-Version 0.3.0.
+Version 0.3.1.
 
 ## What it adds
 
@@ -40,10 +40,10 @@ The game plays as on the console. Around it ZeroTyperance adds:
 
 **Windows:** from the [latest release](https://github.com/DarthNuts/ZeroTyperance/releases/latest) download
 
-- **`ZeroTyperance-0.3.0-setup.exe`**, the installer: no administrator rights; it installs into
+- **`ZeroTyperance-0.3.1-setup.exe`**, the installer: no administrator rights; it installs into
   `%LOCALAPPDATA%\Programs\ZeroTyperance`, adds a Start menu entry (and, if you tick it, a desktop shortcut) and an
   entry in Settings → Apps for uninstalling. Running a newer setup later updates the game.
-- or **`ZeroTyperance-0.3.0-windows-x64.zip`**, the portable app: unzip it anywhere (a USB stick works) and start
+- or **`ZeroTyperance-0.3.1-windows-x64.zip`**, the portable app: unzip it anywhere (a USB stick works) and start
   `ZeroTyperance.exe` in its folder.
 
 Both include Node.js 24.22.2 and download the ROM image (see above) when installed or first started. The files
